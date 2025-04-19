@@ -2,14 +2,25 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8">
-  <title>Live‑PGN — все доски тура 1</title>
+  <title>Live‑PGN — тур 1</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
   <!-- Стили chessboard.js -->
-  <link rel="stylesheet"
-        href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css" />
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css"
+  />
   <style>
-    body { font-family: Arial, sans-serif; text-align: center; padding: 20px; }
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+      text-align: center;
+    }
+    #event-title {
+      font-size: 24px;
+      margin-bottom: 30px;
+      font-weight: bold;
+    }
     .board-wrapper {
       display: inline-block;
       vertical-align: top;
@@ -19,41 +30,41 @@
       border-radius: 4px;
       width: 320px;
     }
-    .board { width: 300px; margin: auto; }
-    .info {
-      margin-top: 6px;
-      text-align: left;
-      font-size: 13px;
-      max-height: 100px;
-      overflow-y: auto;
+    .board-wrapper h3 {
+      margin: 0 0 10px;
+      font-size: 18px;
+    }
+    .board {
+      width: 300px;
+      margin: auto;
     }
   </style>
 </head>
 <body>
 
-  <h2>Все партии тура 1</h2>
+  <!-- Сюда запишем Event первой партии -->
+  <div id="event-title">Загрузка…</div>
+
+  <!-- Сюда вставим все доски тура 1 -->
   <div id="boards-container"></div>
 
-  <!-- jQuery (для chessboard.js) -->
+  <!-- зависимости -->
   <script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
-  <!-- chess.js движок -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.1/chess.min.js"></script>
-  <!-- chessboard.js -->
   <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
 
   <script>
     const PGN_URL = "https://live.idchess.com/download/shared/pgn/gs-eJ8OrndCwXa9d7thEJl1DyD2DNu7IxZBAlKBDIdkh315Ibjc6u_5jGnbAsw3Z?type=tournament";
     const container = document.getElementById('boards-container');
-    const gamesMap = {}; // { boardId: {chess, board, infoDiv, lastCount} }
+    const eventTitle = document.getElementById('event-title');
+    const gamesMap = {};
 
-    // Разбиваем весь PGN на отдельные партии
     function parseGames(text) {
       return text
         .split(/\n(?=\[TimeControl)/g)
         .map(s => s.trim())
         .filter(Boolean);
     }
-    // Парсим заголовки [Key "Value"]
     function parseHeaders(pgn) {
       const H = {};
       pgn.split('\n').forEach(l => {
@@ -68,19 +79,24 @@
         const res = await fetch(PGN_URL, { cache: 'no-store' });
         if (!res.ok) throw new Error(res.statusText);
         const txt = await res.text();
-        const allChunks = parseGames(txt);
+        const chunks = parseGames(txt);
 
-        allChunks.forEach(chunk => {
+        // Ставим Event в заголовок страницы (берём из первой партии тура 1)
+        const firstRound1 = chunks
+          .map(parseHeaders)
+          .find(hdr => hdr.Round === "1");
+        if (firstRound1) {
+          eventTitle.textContent = firstRound1.Event;
+        }
+
+        // Для каждой партии тура 1 строим доску
+        chunks.forEach(chunk => {
           const hdr = parseHeaders(chunk);
-          // берём только партии первого тура
           if (hdr.Round !== "1") return;
 
-          // номер доски из header Board
           const boardId = hdr.Board.trim();
-
-          // если доска ещё не создана — создаём разметку и инстансы
           if (!gamesMap[boardId]) {
-            // обёртка
+            // создаём обёртку
             const wrap = document.createElement('div');
             wrap.className = 'board-wrapper';
 
@@ -89,21 +105,15 @@
             title.textContent = `Доска ${boardId}`;
             wrap.appendChild(title);
 
-            // сам div для доски
+            // див для шахматной доски
             const boardDiv = document.createElement('div');
             boardDiv.id = `board-${boardId}`;
             boardDiv.className = 'board';
             wrap.appendChild(boardDiv);
 
-            // блок с мета‑инфо
-            const infoDiv = document.createElement('div');
-            infoDiv.id = `info-${boardId}`;
-            infoDiv.className = 'info';
-            wrap.appendChild(infoDiv);
-
             container.appendChild(wrap);
 
-            // инициализация chess.js и chessboard.js
+            // инициализируем
             const chess = new Chess();
             const board = Chessboard(boardDiv.id, {
               draggable: false,
@@ -111,33 +121,22 @@
               pieceTheme: 'https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png'
             });
 
-            gamesMap[boardId] = {
-              chess, board, infoDiv, lastCount: 0
-            };
+            gamesMap[boardId] = { chess, board, lastCount: 0 };
           }
 
-          // обновляем доску и инфо
+          // обновляем позицию
           const g = gamesMap[boardId];
           g.chess.load_pgn(chunk);
           g.board.position(g.chess.fen());
-
-          // если количество ходов изменилось — обновляем мета
-          const movesCount = g.chess.history().length;
-          if (movesCount !== g.lastCount) {
-            // отображаем заголовки
-            g.infoDiv.innerHTML = Object.entries(hdr)
-              .map(([k,v]) => `<b>${k}</b>: ${v}`)
-              .join('<br>');
-            g.lastCount = movesCount;
-          }
         });
 
       } catch (err) {
-        console.error("Ошибка:", err);
+        console.error("Ошибка загрузки PGN:", err);
+        eventTitle.textContent = "Не удалось загрузить турнир";
       }
     }
 
-    // первый запуск и авто‑обновление каждые 5 секунд
+    // первый запуск и авто‑обновление
     updateAll();
     setInterval(updateAll, 5000);
   </script>
