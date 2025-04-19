@@ -108,13 +108,14 @@
     const modalOverlay = document.getElementById('modal-overlay');
     const modalBoardDiv = document.getElementById('modal-board');
     const moveCounter = document.getElementById('move-counter');
-    let modalChess, modalBoard, modalMoves, modalIndex;
 
     const gamesMap = {};
+    let modalChess, modalBoard, modalMovesVerbose, modalIndex;
 
     function parseGames(text) {
       return text.split(/\n(?=\[TimeControl)/g).map(s => s.trim()).filter(Boolean);
     }
+
     function parseHeaders(pgn) {
       const H = {};
       pgn.split('\n').forEach(l => {
@@ -125,106 +126,116 @@
     }
 
     async function updateAll() {
-      const res = await fetch(PGN_URL, { cache: 'no-store' });
-      const txt = await res.text();
-      const chunks = parseGames(txt);
+      try {
+        const res = await fetch(PGN_URL, { cache: 'no-store' });
+        const txt = await res.text();
+        const chunks = parseGames(txt);
 
-      chunks.forEach(chunk => {
-        const hdr = parseHeaders(chunk);
-        if (hdr.Round !== "1") return;
-        const boardId = hdr.Board.trim();
+        chunks.forEach(chunk => {
+          const hdr = parseHeaders(chunk);
+          if (hdr.Round !== "1") return;
+          const boardId = hdr.Board.trim();
 
-        if (!gamesMap[boardId]) {
-          // создаём блок доски
-          const wrap = document.createElement('div');
-          wrap.className = 'board-wrapper';
-          wrap.onclick = () => openModal(boardId);
+          if (!gamesMap[boardId]) {
+            const wrap = document.createElement('div');
+            wrap.className = 'board-wrapper';
+            wrap.onclick = () => openModal(boardId);
 
-          const title = document.createElement('h3');
-          title.textContent = `Доска ${boardId}`;
-          wrap.appendChild(title);
+            const title = document.createElement('h3');
+            title.textContent = `Доска ${boardId}`;
+            wrap.appendChild(title);
 
-          const boardDiv = document.createElement('div');
-          boardDiv.id = `board-${boardId}`;
-          boardDiv.className = 'board';
-          wrap.appendChild(boardDiv);
+            const boardDiv = document.createElement('div');
+            boardDiv.id = `board-${boardId}`;
+            boardDiv.className = 'board';
+            wrap.appendChild(boardDiv);
 
-          const playersDiv = document.createElement('div');
-          playersDiv.id = `players-${boardId}`;
-          playersDiv.className = 'players';
-          wrap.appendChild(playersDiv);
+            const playersDiv = document.createElement('div');
+            playersDiv.id = `players-${boardId}`;
+            playersDiv.className = 'players';
+            wrap.appendChild(playersDiv);
 
-          container.appendChild(wrap);
+            container.appendChild(wrap);
 
-          const chess = new Chess();
-          const board = Chessboard(boardDiv.id, {
-            draggable: false,
-            position: 'start',
-            pieceTheme: 'https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png'
-          });
+            const chess = new Chess();
+            const board = Chessboard(boardDiv.id, {
+              draggable: false,
+              position: 'start',
+              pieceTheme: 'https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png'
+            });
 
-          gamesMap[boardId] = { chess, board, playersDiv, pgn: chunk, lastCount: 0 };
-        }
+            gamesMap[boardId] = { chess, board, playersDiv, pgn: chunk, lastCount: 0 };
+          }
 
-        // обновляем доску
-        const g = gamesMap[boardId];
-        g.chess.load_pgn(g.pgn);
-        g.board.position(g.chess.fen());
+          const g = gamesMap[boardId];
+          g.chess.load_pgn(g.pgn);
+          g.board.position(g.chess.fen());
 
-        // обновляем players
-        const count = g.chess.history().length;
-        if (count !== g.lastCount) {
-          const w = hdr.White || "—";
-          const b = hdr.Black || "—";
-          const r = hdr.Result || "*";
-          g.playersDiv.innerHTML =
-            `<div><b>White:</b> ${w}</div>` +
-            `<div><b>Black:</b> ${b}</div>` +
-            `<div><b>Result:</b> ${r}</div>`;
-          g.lastCount = count;
-        }
-      });
+          const count = g.chess.history().length;
+          if (count !== g.lastCount) {
+            const w = hdr.White || "—";
+            const b = hdr.Black || "—";
+            const r = hdr.Result || "*";
+            g.playersDiv.innerHTML =
+              `<div><b>White:</b> ${w}</div>` +
+              `<div><b>Black:</b> ${b}</div>` +
+              `<div><b>Result:</b> ${r}</div>`;
+            g.lastCount = count;
+          }
+        });
+      } catch (err) {
+        console.error("Ошибка загрузки PGN:", err);
+      }
     }
 
     function openModal(boardId) {
-      // подготавливаем модальное окно
       const g = gamesMap[boardId];
-      modalMoves = g.chess.history();      // массив ходов SAN
+      modalMovesVerbose = g.chess.history({ verbose: true });
       modalIndex = 0;
-      modalChess = new Chess();
+
       if (!modalBoard) {
+        modalChess = new Chess();
         modalBoard = Chessboard(modalBoardDiv.id, {
           draggable: false,
           position: 'start',
-          pieceTheme: 'https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png'
+          pieceTheme: g.board.getConfig().pieceTheme
         });
+      } else {
+        modalChess.reset();
+        modalBoard.position(modalChess.fen(), false);
       }
-      updateModal();
+
+      moveCounter.textContent = `0/${modalMovesVerbose.length}`;
       modalOverlay.style.display = 'flex';
     }
 
-    function updateModal() {
-      // переставляем фигуры по modalIndex
-      modalChess.reset();
-      for (let i = 0; i < modalIndex; i++) {
-        modalChess.move(modalMoves[i]);
+    document.getElementById('next-move').onclick = () => {
+      if (modalIndex < modalMovesVerbose.length) {
+        const m = modalMovesVerbose[modalIndex];
+        modalChess.move(m.san);
+        modalBoard.move(`${m.from}-${m.to}`);  // плавная анимация
+        modalIndex++;
+        moveCounter.textContent = `${modalIndex}/${modalMovesVerbose.length}`;
       }
-      modalBoard.position(modalChess.fen());
-      moveCounter.textContent = `${modalIndex}/${modalMoves.length}`;
-    }
+    };
 
-    // события модала
+    document.getElementById('prev-move').onclick = () => {
+      if (modalIndex > 0) {
+        modalIndex--;
+        modalChess.reset();
+        for (let i = 0; i < modalIndex; i++) {
+          modalChess.move(modalMovesVerbose[i].san);
+        }
+        modalBoard.position(modalChess.fen(), false);  // без анимации
+        moveCounter.textContent = `${modalIndex}/${modalMovesVerbose.length}`;
+      }
+    };
+
     document.getElementById('modal-close').onclick = () => {
       modalOverlay.style.display = 'none';
     };
-    document.getElementById('prev-move').onclick = () => {
-      if (modalIndex > 0) { modalIndex--; updateModal(); }
-    };
-    document.getElementById('next-move').onclick = () => {
-      if (modalIndex < modalMoves.length) { modalIndex++; updateModal(); }
-    };
 
-    // стартовое обновление и таймер
+    // Запуск и авто‑обновление
     updateAll();
     setInterval(updateAll, 5000);
   </script>
