@@ -8,73 +8,47 @@
   <!-- Стили chessboard.js -->
   <link
     rel="stylesheet"
-    href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css"
+    href="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.css"
+    integrity="sha512-+sFGZHs3WGkJiPqJgMeiY8MY2YT1jFQOKOBlmc+GTPDM7n0eRZKyy4hO1x+jVHnMf0dwEZmfzzn3KJGOXMsivg=="
+    crossorigin="anonymous"
   />
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      padding: 20px;
-      text-align: center;
-    }
+    body { font-family: Arial, sans-serif; padding:20px; text-align:center; }
     .board-wrapper {
-      display: inline-block;
-      margin: 10px;
-      padding: 8px;
-      border: 1px solid #ccc;
-      border-radius: 4px;
-      width: 300px;
-      cursor: pointer;
+      display:inline-block; margin:8px; padding:8px;
+      border:1px solid #ccc; border-radius:4px; width:280px;
+      cursor:pointer;
     }
-    .board-wrapper h3 {
-      margin: 0 0 8px;
-      font-size: 18px;
-    }
-    .board {
-      width: 280px;
-      margin: auto;
-    }
-    .players {
-      margin-top: 8px;
-      font-size: 14px;
-      text-align: left;
-      line-height: 1.4;
-    }
-    .players b { display: inline-block; width: 60px; }
+    .board-wrapper h3 { margin:0 0 8px; font-size:18px; }
+    .board-static { width: 260px; margin:auto; }
+    .players { text-align:left; font-size:14px; margin-top:6px; }
+    .players b { display:inline-block; width:60px; }
 
-    /* Модальное окно */
+    /* Модалка */
     #modal-overlay {
-      position: fixed; top:0; left:0; right:0; bottom:0;
-      background: rgba(0,0,0,0.5);
-      display: none;
-      align-items: center;
-      justify-content: center;
-      z-index: 1000;
+      position:fixed; top:0;left:0;right:0;bottom:0;
+      background:rgba(0,0,0,0.5); display:none;
+      align-items:center; justify-content:center; z-index:1000;
     }
     #modal-content {
-      background: #fff;
-      padding: 20px;
-      border-radius: 8px;
-      text-align: center;
-      width: 350px;
-      position: relative;
+      background:#fff; padding:16px; border-radius:6px;
+      text-align:center; width:340px; position:relative;
     }
     #modal-close {
-      position: absolute;
-      top: 8px; right: 12px;
-      border: none; background: transparent;
-      font-size: 20px; cursor: pointer;
+      position:absolute; top:8px; right:12px;
+      border:none; background:transparent; font-size:20px; cursor:pointer;
     }
-    #modal-board { width: 300px; margin: auto; }
-    #modal-controls { margin-top: 12px; }
+    #modal-board { width:300px; margin:auto; }
+    #modal-controls { margin-top:12px; }
     #modal-controls button {
-      font-size: 18px; padding: 4px 12px; margin: 0 10px;
+      font-size:18px; padding:4px 10px; margin:0 8px;
     }
-    #move-counter { font-size: 16px; }
+    #move-counter { font-size:16px; }
   </style>
 </head>
 <body>
 
-  <h2>Все доски тура 1 (кликните по доске для просмотра ходов)</h2>
+  <h2>Все доски тура 1 (клик — открыть просмотр ходов)</h2>
   <div id="boards-container"></div>
 
   <!-- Модальное окно -->
@@ -91,149 +65,118 @@
   </div>
 
   <!-- зависимости -->
-  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.1/chess.min.js"></script>
-  <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+  <script
+    src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"
+    integrity="sha512-894YeJO0G+h7TvT9Gk5K5nLMwNLD69Npy4HI+N0Y+MZv8vYpHvP+0QlZ6hIW9Ebm4W9Lk+Q2j2I0ohXWqjGa3g=="
+    crossorigin="anonymous"
+  ></script>
+  <script
+    src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.1/chess.min.js"
+    integrity="sha512-/9l4MnGFYLn3KH1PGvcPIk9kS0/s3pZrzM0P65uwkjNZElrt2uGQ9+HWk6NiJlIn0YuJ0Xo/qULpq5VoW4rXkw=="
+    crossorigin="anonymous"
+  ></script>
+  <script
+    src="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.js"
+    integrity="sha512-PbdhQhgp2ULgk+WT3XAsgKJNCryPpBkx/BoQ3xhnU3rjv0zKBXdvQbAzbhkNlXBvaw0EBNTVK3TSfJjdXd8Ghg=="
+    crossorigin="anonymous"
+  ></script>
 
   <script>
+  (async ()=>{
     const PGN_URL = "https://live.idchess.com/download/shared/pgn/gs-eJ8OrndCwXa9d7thEJl1DyD2DNu7IxZBAlKBDIdkh315Ibjc6u_5jGnbAsw3Z?type=tournament";
-    const container = document.getElementById('boards-container');
-    const modalOverlay = document.getElementById('modal-overlay');
+    const text = await fetch(PGN_URL, {cache:'no-store'}).then(r=>r.text());
+    const chunks = text.split(/\n(?=\[TimeControl)/g).map(s=>s.trim()).filter(Boolean);
+
+    // Формируем мапы
+    const pgnMap = {}, headersMap = {}, fenMap = {};
+    chunks.forEach(chunk=>{
+      const hdr = {};
+      chunk.split('\n').forEach(l=>{
+        const m = l.match(/^\[(\w+)\s+"(.+)"\]/);
+        if(m) hdr[m[1]] = m[2];
+      });
+      if(hdr.Round==="1"){
+        const id=hdr.Board.trim();
+        pgnMap[id]=chunk;
+        headersMap[id]=hdr;
+        const chess=new Chess(); chess.load_pgn(chunk);
+        fenMap[id]=chess.fen();
+      }
+    });
+
+    // Рендерим статичные доски
+    const container=document.getElementById('boards-container');
+    Object.keys(pgnMap).forEach(id=>{
+      const hdr=headersMap[id];
+      const wrap=document.createElement('div');
+      wrap.className='board-wrapper';
+      wrap.addEventListener('click',()=>openModal(id));
+
+      wrap.innerHTML=`
+        <h3>Доска ${id}</h3>
+        <div id="static-${id}" class="board-static"></div>
+        <div class="players">
+          <div><b>White:</b> ${hdr.White||'—'}</div>
+          <div><b>Black:</b> ${hdr.Black||'—'}</div>
+          <div><b>Result:</b> ${hdr.Result||'*'}</div>
+        </div>`;
+      container.appendChild(wrap);
+
+      // создаём Chessboard для статической позиции
+      Chessboard(`static-${id}`, {
+        draggable:false,
+        position:fenMap[id],
+        pieceTheme:'https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png'
+      });
+    });
+
+    // Модалка
+    const overlay = document.getElementById('modal-overlay');
     const modalBoardDiv = document.getElementById('modal-board');
     const moveCounter = document.getElementById('move-counter');
+    document.getElementById('modal-close').onclick=()=>overlay.style.display='none';
 
-    const gamesMap = {};
     let modalChess, modalBoard, modalMovesVerbose, modalIndex;
-
-    function parseGames(text) {
-      return text.split(/\n(?=\[TimeControl)/g).map(s => s.trim()).filter(Boolean);
-    }
-
-    function parseHeaders(pgn) {
-      const H = {};
-      pgn.split('\n').forEach(l => {
-        const m = l.match(/^\[(\w+)\s+"(.+)"\]/);
-        if (m) H[m[1]] = m[2];
-      });
-      return H;
-    }
-
-    async function updateAll() {
-      try {
-        const res = await fetch(PGN_URL, { cache: 'no-store' });
-        const txt = await res.text();
-        const chunks = parseGames(txt);
-
-        chunks.forEach(chunk => {
-          const hdr = parseHeaders(chunk);
-          if (hdr.Round !== "1") return;
-          const boardId = hdr.Board.trim();
-
-          if (!gamesMap[boardId]) {
-            // создаём блок доски
-            const wrap = document.createElement('div');
-            wrap.className = 'board-wrapper';
-            // навешиваем click через addEventListener
-            wrap.addEventListener('click', () => openModal(boardId));
-
-            const title = document.createElement('h3');
-            title.textContent = `Доска ${boardId}`;
-            wrap.appendChild(title);
-
-            const boardDiv = document.createElement('div');
-            boardDiv.id = `board-${boardId}`;
-            boardDiv.className = 'board';
-            wrap.appendChild(boardDiv);
-
-            const playersDiv = document.createElement('div');
-            playersDiv.id = `players-${boardId}`;
-            playersDiv.className = 'players';
-            wrap.appendChild(playersDiv);
-
-            container.appendChild(wrap);
-
-            const chess = new Chess();
-            const board = Chessboard(boardDiv.id, {
-              draggable: false,
-              position: 'start',
-              pieceTheme: 'https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png'
-            });
-
-            gamesMap[boardId] = { chess, board, playersDiv, pgn: chunk, lastCount: 0 };
-          }
-
-          // обновляем доску и игроков
-          const g = gamesMap[boardId];
-          g.chess.load_pgn(g.pgn);
-          g.board.position(g.chess.fen());
-
-          const count = g.chess.history().length;
-          if (count !== g.lastCount) {
-            const w = hdr.White || "—";
-            const b = hdr.Black || "—";
-            const r = hdr.Result || "*";
-            g.playersDiv.innerHTML =
-              `<div><b>White:</b> ${w}</div>` +
-              `<div><b>Black:</b> ${b}</div>` +
-              `<div><b>Result:</b> ${r}</div>`;
-            g.lastCount = count;
-          }
-        });
-      } catch (err) {
-        console.error("Ошибка загрузки PGN:", err);
-      }
-    }
-
-    function openModal(boardId) {
-      console.log("openModal called for", boardId);  // для отладки
-      const g = gamesMap[boardId];
-      modalMovesVerbose = g.chess.history({ verbose: true });
-      modalIndex = 0;
-
-      if (!modalBoard) {
-        modalChess = new Chess();
-        modalBoard = Chessboard(modalBoardDiv.id, {
-          draggable: false,
-          position: 'start',
-          pieceTheme: g.board.getConfig().pieceTheme
+    function openModal(id){
+      // инициализируем модалку
+      modalMovesVerbose = new Chess().load_pgn(pgnMap[id]) && new Chess().history({verbose:true});
+      // но chess.load_pgn() возвращает boolean, поэтому:
+      modalChess=new Chess(); modalChess.load_pgn(pgnMap[id]);
+      modalMovesVerbose = modalChess.history({verbose:true});
+      modalIndex=0;
+      if(!modalBoard){
+        modalBoard=Chessboard(modalBoardDiv.id,{
+          draggable:false,
+          position:'start',
+          pieceTheme:'https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png'
         });
       } else {
-        modalChess.reset();
-        modalBoard.position(modalChess.fen(), false);
+        modalChess.reset(); modalBoard.position(modalChess.fen(),false);
       }
-
-      moveCounter.textContent = `0/${modalMovesVerbose.length}`;
-      modalOverlay.style.display = 'flex';
+      moveCounter.textContent=`0/${modalMovesVerbose.length}`;
+      overlay.style.display='flex';
     }
 
-    document.getElementById('next-move').onclick = () => {
-      if (modalIndex < modalMovesVerbose.length) {
-        const m = modalMovesVerbose[modalIndex];
+    document.getElementById('next-move').onclick=()=>{
+      if(modalIndex<modalMovesVerbose.length){
+        const m=modalMovesVerbose[modalIndex];
         modalChess.move(m.san);
         modalBoard.move(`${m.from}-${m.to}`);
         modalIndex++;
-        moveCounter.textContent = `${modalIndex}/${modalMovesVerbose.length}`;
+        moveCounter.textContent=`${modalIndex}/${modalMovesVerbose.length}`;
       }
     };
-
-    document.getElementById('prev-move').onclick = () => {
-      if (modalIndex > 0) {
+    document.getElementById('prev-move').onclick=()=>{
+      if(modalIndex>0){
         modalIndex--;
         modalChess.reset();
-        for (let i = 0; i < modalIndex; i++) {
-          modalChess.move(modalMovesVerbose[i].san);
-        }
-        modalBoard.position(modalChess.fen(), false);
-        moveCounter.textContent = `${modalIndex}/${modalMovesVerbose.length}`;
+        for(let i=0;i<modalIndex;i++) modalChess.move(modalMovesVerbose[i].san);
+        modalBoard.position(modalChess.fen(),false);
+        moveCounter.textContent=`${modalIndex}/${modalMovesVerbose.length}`;
       }
     };
-
-    document.getElementById('modal-close').onclick = () => {
-      modalOverlay.style.display = 'none';
-    };
-
-    updateAll();
-    setInterval(updateAll, 5000);
+  })();
   </script>
+
 </body>
 </html>
