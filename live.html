@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Live‑PGN — первая партия</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet"
+        href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css" />
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; padding: 20px; }
+    #board { width: 320px; margin: 0 auto; }
+    #info  { margin-top: 10px; text-align: left; max-width: 320px; margin: auto; }
+  </style>
+</head>
+<body>
+  <h2>Первая партия</h2>
+  <div id="board"></div>
+  <div id="info"></div>
+  <script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chess.js@1.0.0/chess.min.js"></script>
+  <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+  <script>
+    const PGN_URL = "https://live.idchess.com/download/shared/pgn/gs-eJ8OrndCwXa9d7thEJl1DyD2DNu7IxZBAlKBDIdkh315Ibjc6u_5jGnbAsw3Z?type=tournament";
+    const chess = new Chess();
+    const board = Chessboard('board', {
+      draggable: false,
+      position: 'start',
+      pieceTheme: 'https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/img/chesspieces/wikipedia/{piece}.png'
+    });
+    function parseGames(text) {
+      return text.split(/\n(?=\[TimeControl)/g).map(s => s.trim()).filter(Boolean);
+    }
+    function parseHeaders(pgn) {
+      const H = {};
+      pgn.split('\n').forEach(l => {
+        const m = l.match(/^\[(\w+)\s+"(.+)"\]/);
+        if (m) H[m[1]] = m[2];
+      });
+      return H;
+    }
+    async function loadFirstGame() {
+      try {
+        const res = await fetch(PGN_URL, { cache: 'no-store' });
+        const txt = await res.text();
+        const games = parseGames(txt);
+        if (!games.length) return;
+        const first = games[0];
+        const hdr = parseHeaders(first);
+        chess.load_pgn(first);
+        board.position(chess.fen());
+        document.getElementById('info').innerHTML =
+          Object.entries(hdr).map(([k,v])=>`<b>${k}</b>: ${v}`).join('<br>');
+      } catch {
+        document.getElementById('info').innerText = "Ошибка загрузки PGN.";
+      }
+    }
+    loadFirstGame();
+  </script>
+</body>
+</html>
