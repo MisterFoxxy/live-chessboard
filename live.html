@@ -31,7 +31,7 @@
     }
     .board {
       width: 280px;
-      margin: auto 0;
+      margin: auto;
     }
     .players {
       margin-top: 8px;
@@ -43,8 +43,7 @@
 
     /* Модальное окно */
     #modal-overlay {
-      position: fixed;
-      top:0; left:0; right:0; bottom:0;
+      position: fixed; top:0; left:0; right:0; bottom:0;
       background: rgba(0,0,0,0.5);
       display: none;
       align-items: center;
@@ -62,19 +61,13 @@
     #modal-close {
       position: absolute;
       top: 8px; right: 12px;
-      border: none;
-      background: transparent;
-      font-size: 20px;
-      cursor: pointer;
+      border: none; background: transparent;
+      font-size: 20px; cursor: pointer;
     }
     #modal-board { width: 300px; margin: auto; }
-    #modal-controls {
-      margin-top: 12px;
-    }
+    #modal-controls { margin-top: 12px; }
     #modal-controls button {
-      font-size: 18px;
-      padding: 4px 12px;
-      margin: 0 10px;
+      font-size: 18px; padding: 4px 12px; margin: 0 10px;
     }
     #move-counter { font-size: 16px; }
   </style>
@@ -98,7 +91,7 @@
   </div>
 
   <!-- зависимости -->
-  <script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.1/chess.min.js"></script>
   <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
 
@@ -137,9 +130,11 @@
           const boardId = hdr.Board.trim();
 
           if (!gamesMap[boardId]) {
+            // создаём блок доски
             const wrap = document.createElement('div');
             wrap.className = 'board-wrapper';
-            wrap.onclick = () => openModal(boardId);
+            // навешиваем click через addEventListener
+            wrap.addEventListener('click', () => openModal(boardId));
 
             const title = document.createElement('h3');
             title.textContent = `Доска ${boardId}`;
@@ -167,6 +162,7 @@
             gamesMap[boardId] = { chess, board, playersDiv, pgn: chunk, lastCount: 0 };
           }
 
+          // обновляем доску и игроков
           const g = gamesMap[boardId];
           g.chess.load_pgn(g.pgn);
           g.board.position(g.chess.fen());
@@ -189,6 +185,7 @@
     }
 
     function openModal(boardId) {
+      console.log("openModal called for", boardId);  // для отладки
       const g = gamesMap[boardId];
       modalMovesVerbose = g.chess.history({ verbose: true });
       modalIndex = 0;
@@ -213,7 +210,7 @@
       if (modalIndex < modalMovesVerbose.length) {
         const m = modalMovesVerbose[modalIndex];
         modalChess.move(m.san);
-        modalBoard.move(`${m.from}-${m.to}`);  // плавная анимация
+        modalBoard.move(`${m.from}-${m.to}`);
         modalIndex++;
         moveCounter.textContent = `${modalIndex}/${modalMovesVerbose.length}`;
       }
@@ -226,7 +223,7 @@
         for (let i = 0; i < modalIndex; i++) {
           modalChess.move(modalMovesVerbose[i].san);
         }
-        modalBoard.position(modalChess.fen(), false);  // без анимации
+        modalBoard.position(modalChess.fen(), false);
         moveCounter.textContent = `${modalIndex}/${modalMovesVerbose.length}`;
       }
     };
@@ -235,7 +232,6 @@
       modalOverlay.style.display = 'none';
     };
 
-    // Запуск и авто‑обновление
     updateAll();
     setInterval(updateAll, 5000);
   </script>
