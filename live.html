@@ -1,182 +1,312 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8">
-  <title>Live‑PGN — тур 1</title>
+  <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-  <!-- Стили chessboard.js -->
-  <link
-    rel="stylesheet"
-    href="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.css"
-    integrity="sha512-+sFGZHs3WGkJiPqJgMeiY8MY2YT1jFQOKOBlmc+GTPDM7n0eRZKyy4hO1x+jVHnMf0dwEZmfzzn3KJGOXMsivg=="
-    crossorigin="anonymous"
-  />
+  <title>Live Chess Round 1</title>
+  <!-- Chessboard.js CSS -->
+  <link rel="stylesheet"
+        href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css"
+        integrity="sha384-q94+BZtLrkL1/ohfjR8c6L+A6qzNH9R2hBLwyoAfu3i/WCvQjzL2RQJ3uNHDISdU"
+        crossorigin="anonymous">
   <style>
-    body { font-family: Arial, sans-serif; padding:20px; text-align:center; }
-    .board-wrapper {
-      display:inline-block; margin:8px; padding:8px;
-      border:1px solid #ccc; border-radius:4px; width:280px;
-      cursor:pointer;
-    }
-    .board-wrapper h3 { margin:0 0 8px; font-size:18px; }
-    .board-static { width: 260px; margin:auto; }
-    .players { text-align:left; font-size:14px; margin-top:6px; }
-    .players b { display:inline-block; width:60px; }
-
-    /* Модалка */
-    #modal-overlay {
-      position:fixed; top:0;left:0;right:0;bottom:0;
-      background:rgba(0,0,0,0.5); display:none;
-      align-items:center; justify-content:center; z-index:1000;
-    }
-    #modal-content {
-      background:#fff; padding:16px; border-radius:6px;
-      text-align:center; width:340px; position:relative;
-    }
-    #modal-close {
-      position:absolute; top:8px; right:12px;
-      border:none; background:transparent; font-size:20px; cursor:pointer;
-    }
-    #modal-board { width:300px; margin:auto; }
-    #modal-controls { margin-top:12px; }
-    #modal-controls button {
-      font-size:18px; padding:4px 10px; margin:0 8px;
-    }
-    #move-counter { font-size:16px; }
+    body { margin: 0; padding: 20px; font-family: sans-serif; }
+    .board-container { display: inline-block; margin: 10px; text-align: center; vertical-align: top; }
+    .chessboard { width: 300px; }
+    .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
+             background: rgba(0,0,0,0.7); align-items: center; justify-content: center; }
+    .modal-content { position: relative; background: #f9f9f9; padding: 20px; border-radius: 5px; text-align: center; }
+    #closeModal { position: absolute; top: 10px; right: 15px; font-size: 24px; font-weight: bold; cursor: pointer; }
+    #closeModal:hover { color: #444; }
+    .instructions { font-size: 14px; color: #333; margin-top: 10px; }
   </style>
 </head>
 <body>
+  <div id="boardsContainer">Загрузка партий...</div>
 
-  <h2>Все доски тура 1 (клик — открыть просмотр ходов)</h2>
-  <div id="boards-container"></div>
-
-  <!-- Модальное окно -->
-  <div id="modal-overlay">
-    <div id="modal-content">
-      <button id="modal-close">&times;</button>
-      <div id="modal-board"></div>
-      <div id="modal-controls">
-        <button id="prev-move">&larr;</button>
-        <span id="move-counter">0/0</span>
-        <button id="next-move">&rarr;</button>
-      </div>
+  <!-- Modal for move navigation -->
+  <div id="modal" class="modal">
+    <div class="modal-content">
+      <span id="closeModal">&times;</span>
+      <div id="modalBoard"></div>
+      <p class="instructions">Use &larr; and &rarr; keys to navigate moves</p>
     </div>
   </div>
 
-  <!-- зависимости -->
-  <script
-    src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"
-    integrity="sha512-894YeJO0G+h7TvT9Gk5K5nLMwNLD69Npy4HI+N0Y+MZv8vYpHvP+0QlZ6hIW9Ebm4W9Lk+Q2j2I0ohXWqjGa3g=="
-    crossorigin="anonymous"
-  ></script>
-  <script
-    src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.1/chess.min.js"
-    integrity="sha512-/9l4MnGFYLn3KH1PGvcPIk9kS0/s3pZrzM0P65uwkjNZElrt2uGQ9+HWk6NiJlIn0YuJ0Xo/qULpq5VoW4rXkw=="
-    crossorigin="anonymous"
-  ></script>
-  <script
-    src="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.js"
-    integrity="sha512-PbdhQhgp2ULgk+WT3XAsgKJNCryPpBkx/BoQ3xhnU3rjv0zKBXdvQbAzbhkNlXBvaw0EBNTVK3TSfJjdXd8Ghg=="
-    crossorigin="anonymous"
-  ></script>
+  <!-- Libraries: jQuery, Chessboard.js, Chess.js (via CDN) -->
+  <script src="https://code.jquery.com/jquery-3.5.1.min.js"
+          integrity="sha384-ZvpUoO/+PpLXR1lu4jmpXWu80pZlYUAfxl5NsBMWOEPSjUn/6Z/hRTt8+pR6L4N2"
+          crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"
+          integrity="sha384-8Vi8VHwn3vjQ9eUHUxex3JSN/NFqUg3QbPyX8kWyb93+8AC/pPWTzj+nHtbC5bxD"
+          crossorigin="anonymous"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js"
+          integrity="sha512-ujGsB4vTyNcSuViwM2DJ0+G2BIViQJl2rVBZBekStznA9Hq96+Wd9+jwu9zlttp0U2/9CYhgR7pOt2j+E6yewg=="
+          crossorigin="anonymous"></script>
 
   <script>
-  (async ()=>{
+    // Configuration constants
     const PGN_URL = "https://live.idchess.com/download/shared/pgn/gs-eJ8OrndCwXa9d7thEJl1DyD2DNu7IxZBAlKBDIdkh315Ibjc6u_5jGnbAsw3Z?type=tournament";
-    const text = await fetch(PGN_URL, {cache:'no-store'}).then(r=>r.text());
-    const chunks = text.split(/\n(?=\[TimeControl)/g).map(s=>s.trim()).filter(Boolean);
+    const UPDATE_INTERVAL = 5000; // 5 seconds
+    const pieceThemePath = "https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png";
 
-    // Формируем мапы
-    const pgnMap = {}, headersMap = {}, fenMap = {};
-    chunks.forEach(chunk=>{
-      const hdr = {};
-      chunk.split('\n').forEach(l=>{
-        const m = l.match(/^\[(\w+)\s+"(.+)"\]/);
-        if(m) hdr[m[1]] = m[2];
-      });
-      if(hdr.Round==="1"){
-        const id=hdr.Board.trim();
-        pgnMap[id]=chunk;
-        headersMap[id]=hdr;
-        const chess=new Chess(); chess.load_pgn(chunk);
-        fenMap[id]=chess.fen();
-      }
-    });
+    // Data for games
+    let gamesData = [];
+    // Modal state
+    let modalBoard = null;
+    let modalChess = null;
+    let modalMoves = [];
+    let modalMoveIndex = 0;
+    let currentGameIndex = null;
 
-    // Рендерим статичные доски
-    const container=document.getElementById('boards-container');
-    Object.keys(pgnMap).forEach(id=>{
-      const hdr=headersMap[id];
-      const wrap=document.createElement('div');
-      wrap.className='board-wrapper';
-      wrap.addEventListener('click',()=>openModal(id));
-
-      wrap.innerHTML=`
-        <h3>Доска ${id}</h3>
-        <div id="static-${id}" class="board-static"></div>
-        <div class="players">
-          <div><b>White:</b> ${hdr.White||'—'}</div>
-          <div><b>Black:</b> ${hdr.Black||'—'}</div>
-          <div><b>Result:</b> ${hdr.Result||'*'}</div>
-        </div>`;
-      container.appendChild(wrap);
-
-      // создаём Chessboard для статической позиции
-      Chessboard(`static-${id}`, {
-        draggable:false,
-        position:fenMap[id],
-        pieceTheme:'https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png'
-      });
-    });
-
-    // Модалка
-    const overlay = document.getElementById('modal-overlay');
-    const modalBoardDiv = document.getElementById('modal-board');
-    const moveCounter = document.getElementById('move-counter');
-    document.getElementById('modal-close').onclick=()=>overlay.style.display='none';
-
-    let modalChess, modalBoard, modalMovesVerbose, modalIndex;
-    function openModal(id){
-      // инициализируем модалку
-      modalMovesVerbose = new Chess().load_pgn(pgnMap[id]) && new Chess().history({verbose:true});
-      // но chess.load_pgn() возвращает boolean, поэтому:
-      modalChess=new Chess(); modalChess.load_pgn(pgnMap[id]);
-      modalMovesVerbose = modalChess.history({verbose:true});
-      modalIndex=0;
-      if(!modalBoard){
-        modalBoard=Chessboard(modalBoardDiv.id,{
-          draggable:false,
-          position:'start',
-          pieceTheme:'https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png'
+    // Utility: parse PGN text and update gamesData
+    function parsePGNandInitGames(pgnText) {
+      gamesData = [];
+      // Split PGN into individual games (only Round "1")
+      const gameSections = pgnText.trim().split(/\r?\n\r?\n(?=\[)/);
+      gameSections.forEach((gameStr) => {
+        // Separate tags and moves
+        const parts = gameStr.split(/\r?\n\r?\n/);
+        if (parts.length < 2) return;
+        const tagsText = parts[0];
+        const movesText = parts[1];
+        // Parse tags
+        const tagLines = tagsText.split(/\r?\n/);
+        let tags = {};
+        tagLines.forEach(line => {
+          const match = line.match(/^\[([A-Za-z0-9_]+)\s*\"([^\"]*)\"\]$/);
+          if (match) {
+            tags[match[1]] = match[2];
+          }
         });
-      } else {
-        modalChess.reset(); modalBoard.position(modalChess.fen(),false);
-      }
-      moveCounter.textContent=`0/${modalMovesVerbose.length}`;
-      overlay.style.display='flex';
+        // Filter by round = "1"
+        if (tags["Round"] !== "1") return;
+        const white = tags["White"] || "Unknown";
+        const black = tags["Black"] || "Unknown";
+        const result = tags["Result"] || "*";
+        // Parse moves into list (remove comments, variations, numbers, result)
+        let movesStr = movesText.replace(/\{[^}]*\}/g, "").replace(/\([^)]*\)/g, "");
+        movesStr = movesStr.replace(/(1-0|0-1|1\/2-1\/2|\*)\s*$/, "");
+        movesStr = movesStr.replace(/\d+\.{1,3}/g, ""); // remove move numbers and ellipses
+        movesStr = movesStr.trim();
+        const movesList = movesStr === "" ? [] : movesStr.split(/\s+/);
+        // Create chess instance and play moves to get final position
+        const chess = new Chess();
+        for (let m of movesList) {
+          chess.move(m);
+        }
+        const finalFen = chess.fen();
+        gamesData.push({
+          white: white,
+          black: black,
+          result: result,
+          moves: movesList,
+          moveCount: movesList.length,
+          chess: chess,
+          board: null,
+          resultElem: null
+        });
+      });
     }
 
-    document.getElementById('next-move').onclick=()=>{
-      if(modalIndex<modalMovesVerbose.length){
-        const m=modalMovesVerbose[modalIndex];
-        modalChess.move(m.san);
-        modalBoard.move(`${m.from}-${m.to}`);
-        modalIndex++;
-        moveCounter.textContent=`${modalIndex}/${modalMovesVerbose.length}`;
-      }
-    };
-    document.getElementById('prev-move').onclick=()=>{
-      if(modalIndex>0){
-        modalIndex--;
-        modalChess.reset();
-        for(let i=0;i<modalIndex;i++) modalChess.move(modalMovesVerbose[i].san);
-        modalBoard.position(modalChess.fen(),false);
-        moveCounter.textContent=`${modalIndex}/${modalMovesVerbose.length}`;
-      }
-    };
-  })();
-  </script>
+    // Initialize boards in DOM
+    function renderBoards() {
+      const container = document.getElementById("boardsContainer");
+      container.innerHTML = ""; // clear any loading text or previous content
+      gamesData.forEach((game, index) => {
+        // Create container div for each game
+        const gameDiv = document.createElement("div");
+        gameDiv.className = "board-container";
+        // Create board element
+        const boardDiv = document.createElement("div");
+        boardDiv.id = "board" + index;
+        boardDiv.className = "chessboard";
+        // Create info text element
+        const infoDiv = document.createElement("div");
+        infoDiv.className = "game-info";
+        infoDiv.innerHTML = `White: ${game.white}<br>Black: ${game.black}<br>Result: <span class="result-val">${game.result}</span>`;
+        // Append to container
+        gameDiv.appendChild(boardDiv);
+        gameDiv.appendChild(infoDiv);
+        container.appendChild(gameDiv);
+        // Initialize chessboard.js for this board
+        const board = Chessboard(boardDiv.id, {
+          pieceTheme: pieceThemePath,
+          position: game.chess.fen(),
+          showNotation: true,
+          draggable: false
+        });
+        game.board = board;
+        game.resultElem = infoDiv.querySelector(".result-val");
+        // Click handler to open modal for this game
+        gameDiv.addEventListener("click", () => openModal(index));
+      });
+    }
 
+    // Fetch PGN data and initialize
+    function loadInitialData() {
+      fetch(PGN_URL)
+        .then(response => response.text())
+        .then(text => {
+          parsePGNandInitGames(text);
+          renderBoards();
+        })
+        .catch(err => {
+          console.error("PGN load error:", err);
+          document.getElementById("boardsContainer").innerText = "Ошибка загрузки данных.";
+        });
+    }
+
+    // Update loop
+    function setupAutoUpdate() {
+      setInterval(() => {
+        fetch(PGN_URL).then(res => res.text()).then(newText => {
+          // Split new PGN into games and filter round 1
+          const newSections = newText.trim().split(/\r?\n\r?\n(?=\[)/);
+          let newGames = [];
+          newSections.forEach(sec => {
+            const parts = sec.split(/\r?\n\r?\n/);
+            if (parts.length < 2) return;
+            const tagsText = parts[0];
+            const movesText = parts[1];
+            // get Round, White, Black, Result
+            const tagLines = tagsText.split(/\r?\n/);
+            let t = {};
+            tagLines.forEach(line => {
+              const m = line.match(/^\[([A-Za-z0-9_]+)\s*\"([^\"]*)\"\]$/);
+              if (m) t[m[1]] = m[2];
+            });
+            if (t["Round"] !== "1") return;
+            // Normalize moves text (same as in parsePGNandInitGames)
+            let mvStr = movesText.replace(/\{[^}]*\}/g, "").replace(/\([^)]*\)/g, "");
+            mvStr = mvStr.replace(/(1-0|0-1|1\/2-1\/2|\*)\s*$/, "");
+            mvStr = mvStr.replace(/\d+\.{1,3}/g, "");
+            mvStr = mvStr.trim();
+            const movesArr = mvStr === "" ? [] : mvStr.split(/\s+/);
+            newGames.push({
+              white: t["White"] || "Unknown",
+              black: t["Black"] || "Unknown",
+              result: t["Result"] || "*",
+              moves: movesArr
+            });
+          });
+          // Compare and update each game
+          newGames.forEach((newGame, i) => {
+            if (!gamesData[i]) return;
+            const oldGame = gamesData[i];
+            // If any difference in moves or result
+            const newCount = newGame.moves.length;
+            const oldCount = oldGame.moveCount;
+            const resultChanged = newGame.result !== oldGame.result;
+            let movesChanged = false;
+            // Check if moves lists differ
+            if (newCount !== oldCount) {
+              movesChanged = true;
+            } else {
+              for (let j = 0; j < newCount; j++) {
+                if (newGame.moves[j] !== oldGame.moves[j]) {
+                  movesChanged = true;
+                  break;
+                }
+              }
+            }
+            if (movesChanged || resultChanged) {
+              // Update moves if changed
+              if (movesChanged) {
+                if (newCount < oldCount || !oldGame.moves.slice(0, oldCount).every((m, idx) => m === newGame.moves[idx])) {
+                  // If moves were altered (not just appended) or removed, reload game fully
+                  oldGame.chess = new Chess();
+                  newGame.moves.forEach(mv => oldGame.chess.move(mv));
+                } else {
+                  // Moves only appended
+                  for (let k = oldCount; k < newCount; k++) {
+                    oldGame.chess.move(newGame.moves[k]);
+                  }
+                }
+                oldGame.moves = newGame.moves;
+                oldGame.moveCount = newCount;
+                // Update board position
+                const newFen = oldGame.chess.fen();
+                oldGame.board.position(newFen, false);
+              }
+              // Update result if changed
+              if (resultChanged) {
+                oldGame.result = newGame.result;
+                if (oldGame.resultElem) {
+                  oldGame.resultElem.textContent = newGame.result;
+                }
+              }
+            }
+          });
+        }).catch(err => console.error("Update fetch error:", err));
+      }, UPDATE_INTERVAL);
+    }
+
+    // Modal controls
+    function openModal(gameIndex) {
+      currentGameIndex = gameIndex;
+      const game = gamesData[gameIndex];
+      if (!game) return;
+      // Initialize modalChess and modalMoves
+      modalChess = new Chess(); // start fresh
+      modalMoves = game.moves.slice(); // copy moves list
+      modalMoveIndex = 0;
+      // Show modal
+      const modalEl = document.getElementById("modal");
+      modalEl.style.display = "flex";
+      // Initialize modal board if not already
+      if (!modalBoard) {
+        modalBoard = Chessboard('modalBoard', {
+          pieceTheme: pieceThemePath,
+          showNotation: true,
+          draggable: false,
+          moveSpeed: 300
+        });
+      }
+      // Reset modal board to start position
+      modalBoard.start(false);
+    }
+
+    function closeModal() {
+      document.getElementById("modal").style.display = "none";
+      currentGameIndex = null;
+    }
+
+    function nextMove() {
+      if (!modalChess || modalMoveIndex >= modalMoves.length) return;
+      const move = modalMoves[modalMoveIndex];
+      modalChess.move(move);
+      modalMoveIndex++;
+      modalBoard.position(modalChess.fen(), true);
+    }
+
+    function prevMove() {
+      if (!modalChess || modalMoveIndex <= 0) return;
+      modalChess.undo();
+      modalMoveIndex--;
+      modalBoard.position(modalChess.fen(), true);
+    }
+
+    // Event listeners for modal navigation and closing
+    document.getElementById("closeModal").onclick = closeModal;
+    document.getElementById("modal").addEventListener("click", (e) => {
+      if (e.target.id === "modal") closeModal();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (document.getElementById("modal").style.display === "flex") {
+        if (e.key === "ArrowRight") {
+          nextMove();
+        } else if (e.key === "ArrowLeft") {
+          prevMove();
+        } else if (e.key === "Escape") {
+          closeModal();
+        }
+      }
+    });
+
+    // Initialize on page load
+    loadInitialData();
+    setupAutoUpdate();
+  </script>
 </body>
 </html>
