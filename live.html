@@ -16,11 +16,6 @@
       padding: 20px;
       text-align: center;
     }
-    #event-title {
-      font-size: 24px;
-      margin-bottom: 30px;
-      font-weight: bold;
-    }
     .board-wrapper {
       display: inline-block;
       vertical-align: top;
@@ -28,24 +23,28 @@
       padding: 8px;
       border: 1px solid #ccc;
       border-radius: 4px;
-      width: 320px;
+      width: 300px;
     }
     .board-wrapper h3 {
-      margin: 0 0 10px;
+      margin: 0 0 8px;
       font-size: 18px;
     }
     .board {
-      width: 300px;
-      margin: auto;
+      width: 280px;
+      margin: auto 0;
     }
+    .players {
+      margin-top: 8px;
+      font-size: 14px;
+      text-align: left;
+      line-height: 1.4;
+    }
+    .players b { display: inline-block; width: 60px; }
   </style>
 </head>
 <body>
 
-  <!-- Сюда запишем Event первой партии -->
-  <div id="event-title">Загрузка…</div>
-
-  <!-- Сюда вставим все доски тура 1 -->
+  <h2>Все доски тура 1</h2>
   <div id="boards-container"></div>
 
   <!-- зависимости -->
@@ -56,7 +55,6 @@
   <script>
     const PGN_URL = "https://live.idchess.com/download/shared/pgn/gs-eJ8OrndCwXa9d7thEJl1DyD2DNu7IxZBAlKBDIdkh315Ibjc6u_5jGnbAsw3Z?type=tournament";
     const container = document.getElementById('boards-container');
-    const eventTitle = document.getElementById('event-title');
     const gamesMap = {};
 
     function parseGames(text) {
@@ -81,39 +79,33 @@
         const txt = await res.text();
         const chunks = parseGames(txt);
 
-        // Ставим Event в заголовок страницы (берём из первой партии тура 1)
-        const firstRound1 = chunks
-          .map(parseHeaders)
-          .find(hdr => hdr.Round === "1");
-        if (firstRound1) {
-          eventTitle.textContent = firstRound1.Event;
-        }
-
-        // Для каждой партии тура 1 строим доску
+        // проходим по всем партиям тура 1
         chunks.forEach(chunk => {
           const hdr = parseHeaders(chunk);
           if (hdr.Round !== "1") return;
 
           const boardId = hdr.Board.trim();
+          // если ещё нет — создаём блок
           if (!gamesMap[boardId]) {
-            // создаём обёртку
             const wrap = document.createElement('div');
             wrap.className = 'board-wrapper';
 
-            // заголовок доски
             const title = document.createElement('h3');
             title.textContent = `Доска ${boardId}`;
             wrap.appendChild(title);
 
-            // див для шахматной доски
             const boardDiv = document.createElement('div');
             boardDiv.id = `board-${boardId}`;
             boardDiv.className = 'board';
             wrap.appendChild(boardDiv);
 
+            const playersDiv = document.createElement('div');
+            playersDiv.id = `players-${boardId}`;
+            playersDiv.className = 'players';
+            wrap.appendChild(playersDiv);
+
             container.appendChild(wrap);
 
-            // инициализируем
             const chess = new Chess();
             const board = Chessboard(boardDiv.id, {
               draggable: false,
@@ -121,18 +113,32 @@
               pieceTheme: 'https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png'
             });
 
-            gamesMap[boardId] = { chess, board, lastCount: 0 };
+            gamesMap[boardId] = {
+              chess, board, playersDiv, lastCount: 0
+            };
           }
 
-          // обновляем позицию
+          // обновляем доску
           const g = gamesMap[boardId];
           g.chess.load_pgn(chunk);
           g.board.position(g.chess.fen());
+
+          // обновляем игроков и результат, если ходы изменились
+          const count = g.chess.history().length;
+          if (count !== g.lastCount) {
+            const w = hdr.White || "—";
+            const b = hdr.Black || "—";
+            const r = hdr.Result || "*";
+            g.playersDiv.innerHTML = 
+              `<div><b>White:</b> ${w}</div>` +
+              `<div><b>Black:</b> ${b}</div>` +
+              `<div><b>Result:</b> ${r}</div>`;
+            g.lastCount = count;
+          }
         });
 
       } catch (err) {
         console.error("Ошибка загрузки PGN:", err);
-        eventTitle.textContent = "Не удалось загрузить турнир";
       }
     }
 
