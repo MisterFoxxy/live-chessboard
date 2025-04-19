@@ -18,12 +18,12 @@
     }
     .board-wrapper {
       display: inline-block;
-      vertical-align: top;
       margin: 10px;
       padding: 8px;
       border: 1px solid #ccc;
       border-radius: 4px;
       width: 300px;
+      cursor: pointer;
     }
     .board-wrapper h3 {
       margin: 0 0 8px;
@@ -40,12 +40,62 @@
       line-height: 1.4;
     }
     .players b { display: inline-block; width: 60px; }
+
+    /* Модальное окно */
+    #modal-overlay {
+      position: fixed;
+      top:0; left:0; right:0; bottom:0;
+      background: rgba(0,0,0,0.5);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+    #modal-content {
+      background: #fff;
+      padding: 20px;
+      border-radius: 8px;
+      text-align: center;
+      width: 350px;
+      position: relative;
+    }
+    #modal-close {
+      position: absolute;
+      top: 8px; right: 12px;
+      border: none;
+      background: transparent;
+      font-size: 20px;
+      cursor: pointer;
+    }
+    #modal-board { width: 300px; margin: auto; }
+    #modal-controls {
+      margin-top: 12px;
+    }
+    #modal-controls button {
+      font-size: 18px;
+      padding: 4px 12px;
+      margin: 0 10px;
+    }
+    #move-counter { font-size: 16px; }
   </style>
 </head>
 <body>
 
-  <h2>Все доски тура 1</h2>
+  <h2>Все доски тура 1 (кликните по доске для просмотра ходов)</h2>
   <div id="boards-container"></div>
+
+  <!-- Модальное окно -->
+  <div id="modal-overlay">
+    <div id="modal-content">
+      <button id="modal-close">&times;</button>
+      <div id="modal-board"></div>
+      <div id="modal-controls">
+        <button id="prev-move">&larr;</button>
+        <span id="move-counter">0/0</span>
+        <button id="next-move">&rarr;</button>
+      </div>
+    </div>
+  </div>
 
   <!-- зависимости -->
   <script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
@@ -55,13 +105,15 @@
   <script>
     const PGN_URL = "https://live.idchess.com/download/shared/pgn/gs-eJ8OrndCwXa9d7thEJl1DyD2DNu7IxZBAlKBDIdkh315Ibjc6u_5jGnbAsw3Z?type=tournament";
     const container = document.getElementById('boards-container');
+    const modalOverlay = document.getElementById('modal-overlay');
+    const modalBoardDiv = document.getElementById('modal-board');
+    const moveCounter = document.getElementById('move-counter');
+    let modalChess, modalBoard, modalMoves, modalIndex;
+
     const gamesMap = {};
 
     function parseGames(text) {
-      return text
-        .split(/\n(?=\[TimeControl)/g)
-        .map(s => s.trim())
-        .filter(Boolean);
+      return text.split(/\n(?=\[TimeControl)/g).map(s => s.trim()).filter(Boolean);
     }
     function parseHeaders(pgn) {
       const H = {};
@@ -73,76 +125,106 @@
     }
 
     async function updateAll() {
-      try {
-        const res = await fetch(PGN_URL, { cache: 'no-store' });
-        if (!res.ok) throw new Error(res.statusText);
-        const txt = await res.text();
-        const chunks = parseGames(txt);
+      const res = await fetch(PGN_URL, { cache: 'no-store' });
+      const txt = await res.text();
+      const chunks = parseGames(txt);
 
-        // проходим по всем партиям тура 1
-        chunks.forEach(chunk => {
-          const hdr = parseHeaders(chunk);
-          if (hdr.Round !== "1") return;
+      chunks.forEach(chunk => {
+        const hdr = parseHeaders(chunk);
+        if (hdr.Round !== "1") return;
+        const boardId = hdr.Board.trim();
 
-          const boardId = hdr.Board.trim();
-          // если ещё нет — создаём блок
-          if (!gamesMap[boardId]) {
-            const wrap = document.createElement('div');
-            wrap.className = 'board-wrapper';
+        if (!gamesMap[boardId]) {
+          // создаём блок доски
+          const wrap = document.createElement('div');
+          wrap.className = 'board-wrapper';
+          wrap.onclick = () => openModal(boardId);
 
-            const title = document.createElement('h3');
-            title.textContent = `Доска ${boardId}`;
-            wrap.appendChild(title);
+          const title = document.createElement('h3');
+          title.textContent = `Доска ${boardId}`;
+          wrap.appendChild(title);
 
-            const boardDiv = document.createElement('div');
-            boardDiv.id = `board-${boardId}`;
-            boardDiv.className = 'board';
-            wrap.appendChild(boardDiv);
+          const boardDiv = document.createElement('div');
+          boardDiv.id = `board-${boardId}`;
+          boardDiv.className = 'board';
+          wrap.appendChild(boardDiv);
 
-            const playersDiv = document.createElement('div');
-            playersDiv.id = `players-${boardId}`;
-            playersDiv.className = 'players';
-            wrap.appendChild(playersDiv);
+          const playersDiv = document.createElement('div');
+          playersDiv.id = `players-${boardId}`;
+          playersDiv.className = 'players';
+          wrap.appendChild(playersDiv);
 
-            container.appendChild(wrap);
+          container.appendChild(wrap);
 
-            const chess = new Chess();
-            const board = Chessboard(boardDiv.id, {
-              draggable: false,
-              position: 'start',
-              pieceTheme: 'https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png'
-            });
+          const chess = new Chess();
+          const board = Chessboard(boardDiv.id, {
+            draggable: false,
+            position: 'start',
+            pieceTheme: 'https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png'
+          });
 
-            gamesMap[boardId] = {
-              chess, board, playersDiv, lastCount: 0
-            };
-          }
+          gamesMap[boardId] = { chess, board, playersDiv, pgn: chunk, lastCount: 0 };
+        }
 
-          // обновляем доску
-          const g = gamesMap[boardId];
-          g.chess.load_pgn(chunk);
-          g.board.position(g.chess.fen());
+        // обновляем доску
+        const g = gamesMap[boardId];
+        g.chess.load_pgn(g.pgn);
+        g.board.position(g.chess.fen());
 
-          // обновляем игроков и результат, если ходы изменились
-          const count = g.chess.history().length;
-          if (count !== g.lastCount) {
-            const w = hdr.White || "—";
-            const b = hdr.Black || "—";
-            const r = hdr.Result || "*";
-            g.playersDiv.innerHTML = 
-              `<div><b>White:</b> ${w}</div>` +
-              `<div><b>Black:</b> ${b}</div>` +
-              `<div><b>Result:</b> ${r}</div>`;
-            g.lastCount = count;
-          }
-        });
-
-      } catch (err) {
-        console.error("Ошибка загрузки PGN:", err);
-      }
+        // обновляем players
+        const count = g.chess.history().length;
+        if (count !== g.lastCount) {
+          const w = hdr.White || "—";
+          const b = hdr.Black || "—";
+          const r = hdr.Result || "*";
+          g.playersDiv.innerHTML =
+            `<div><b>White:</b> ${w}</div>` +
+            `<div><b>Black:</b> ${b}</div>` +
+            `<div><b>Result:</b> ${r}</div>`;
+          g.lastCount = count;
+        }
+      });
     }
 
-    // первый запуск и авто‑обновление
+    function openModal(boardId) {
+      // подготавливаем модальное окно
+      const g = gamesMap[boardId];
+      modalMoves = g.chess.history();      // массив ходов SAN
+      modalIndex = 0;
+      modalChess = new Chess();
+      if (!modalBoard) {
+        modalBoard = Chessboard(modalBoardDiv.id, {
+          draggable: false,
+          position: 'start',
+          pieceTheme: 'https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png'
+        });
+      }
+      updateModal();
+      modalOverlay.style.display = 'flex';
+    }
+
+    function updateModal() {
+      // переставляем фигуры по modalIndex
+      modalChess.reset();
+      for (let i = 0; i < modalIndex; i++) {
+        modalChess.move(modalMoves[i]);
+      }
+      modalBoard.position(modalChess.fen());
+      moveCounter.textContent = `${modalIndex}/${modalMoves.length}`;
+    }
+
+    // события модала
+    document.getElementById('modal-close').onclick = () => {
+      modalOverlay.style.display = 'none';
+    };
+    document.getElementById('prev-move').onclick = () => {
+      if (modalIndex > 0) { modalIndex--; updateModal(); }
+    };
+    document.getElementById('next-move').onclick = () => {
+      if (modalIndex < modalMoves.length) { modalIndex++; updateModal(); }
+    };
+
+    // стартовое обновление и таймер
     updateAll();
     setInterval(updateAll, 5000);
   </script>
