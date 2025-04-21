@@ -1,3 +1,4 @@
+<!DOCTYPE html>
 <html lang="ru">
 <head>
   <meta charset="UTF-8" />
@@ -91,7 +92,7 @@
     function renderBoards() {
       const c = $("#boardsContainer").empty();
       games.forEach((g,i) => {
-        const div = $(
+        const div = $(`
           <div class="board-container">
             <div id="board${i}" class="chessboard"></div>
             <div class="game-info">
@@ -99,9 +100,9 @@
               <b>Чёрные:</b> ${g.tags.Black||"?"}<br>
               <b>Результат:</b> ${g.tags.Result||"*"}
             </div>
-          </div>);
+          </div>`);
         c.append(div);
-        g.board = Chessboard(board${i}, {
+        g.board = Chessboard(`board${i}`, {
           position: g.chess.fen(),
           pieceTheme,
           draggable: false
