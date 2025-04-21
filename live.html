@@ -2,263 +2,172 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8" />
-  <title>Live Chessboard</title>
-  <!-- Chessboard.js library CSS (for board styling) -->
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.css" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Live Chess</title>
+  <!-- Chessboard.js CSS -->
+  <link rel="stylesheet"
+        href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css"
+        crossorigin="anonymous"/>
   <style>
-    /* Basic styling for games list */
-    #gamesList .game-item {
-      padding: 5px;
-      border-bottom: 1px solid #ccc;
-      cursor: pointer;
-    }
-    #gamesList .game-item:hover { background: #f0f0f0; }
-    /* Modal overlay and content styling */
-    #modal {
-      display: none; position: fixed; z-index: 1000;
-      top: 0; left: 0; width: 100%; height: 100%;
-      background: rgba(0,0,0,0.5);
-    }
-    .modal-content {
-      background: #fff; padding: 20px;
-      margin: 5% auto; width: 90%; max-width: 600px;
-      border-radius: 4px; position: relative;
-    }
-    /* Close button (X) in the modal */
-    #closeBtn {
-      position: absolute; top: 10px; right: 10px;
-      font-size: 24px; font-weight: bold; cursor: pointer;
-    }
-    /* Chessboard container size */
-    #board { 
-      width: 400px; /* adjust as needed for board size */
-      margin: 20px auto;
-    }
-    /* Moves text area styling */
-    #movesText {
-      white-space: pre-wrap; /* allow wrapping of PGN text */
-      max-height: 200px; overflow-y: auto;
-      font-family: sans-serif; font-size: 14px;
-      background: #f9f9f9; padding: 10px;
-      border: 1px solid #ddd; border-radius: 4px;
-    }
+    body { margin:0; padding:20px; font-family:sans-serif; text-align:center; }
+    #eventTitle { font-size:24px; font-weight:bold; margin-bottom:10px; }
+    #roundSelector { margin-bottom:20px; }
+    .round-btn { padding:6px 12px; margin:0 4px; font-size:16px; cursor:pointer; }
+    .board-container { display:inline-block; margin:10px; vertical-align:top; cursor:pointer; }
+    .chessboard { width:300px; }
+    .game-info { text-align:left; font-size:14px; margin-top:6px; }
+    .game-info b { width:70px; display:inline-block; }
+    #modal { display:none; position:fixed; top:0; left:0; width:100%; height:100%;
+             background:rgba(0,0,0,0.7); align-items:center; justify-content:center; }
+    .modal-content { position:relative; background:#f9f9f9; padding:20px; border-radius:5px; text-align:center; z-index:1000; }
+    #closeModal { position:absolute; top:10px; right:15px; font-size:24px; cursor:pointer; z-index:1001; }
+    #modalBoard { width:300px; margin:auto; }
+    .controls { margin-top:12px; }
+    .controls button { padding:6px 12px; margin:0 8px; font-size:16px; }
   </style>
 </head>
 <body>
+  <div id="eventTitle">Загрузка…</div>
+  <div id="roundSelector">
+    <span style="font-size:18px; font-weight:bold;">Выбрать тур:</span>
+    <span id="roundButtons"></span>
+  </div>
+  <div id="boardsContainer">Загрузка партий…</div>
 
-  <!-- Event title (set dynamically from PGN [Event] tag) -->
-  <h2 id="eventName"></h2>
-
-  <!-- Round selection dropdown -->
-  <label for="roundSelect">Выбрать тур:</label>
-  <select id="roundSelect"></select>
-
-  <!-- Container for the list of games of the selected round -->
-  <div id="gamesList"></div>
-
-  <!-- Modal for game details -->
+  <!-- Модалка -->
   <div id="modal">
     <div class="modal-content">
-      <span id="closeBtn">&times;</span>
-      <h3 id="gameTitle"></h3>
-      <div id="board"></div>
-      <p id="movesText"></p>
+      <span id="closeModal">&times;</span>
+      <div id="modalBoard"></div>
+      <div class="controls">
+        <button id="prevBtn">Назад</button>
+        <button id="nextBtn">Вперед</button>
+      </div>
     </div>
   </div>
 
-  <!-- Include required libraries: jQuery (for chessboard.js), then chess.js, then chessboard.js -->
-  <script src="https://code.jquery.com/jquery-1.10.2.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.js"></script>
+  <!-- Зависимости -->
+  <script src="https://code.jquery.com/jquery-3.5.1.min.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js" crossorigin="anonymous"></script>
 
   <script>
-    // Parse PGN text into game objects array
-    function parsePGN(pgnText) {
-      const games = [];
-      let currentGame = null;
-      let readingMoves = false;
-      const lines = pgnText.split(/\r?\n/);
-      for (let line of lines) {
-        const trimmed = line.trim();
-        if (trimmed === "") {
-          // Empty line indicates end of tag section or separation between games
-          if (currentGame && !readingMoves) {
-            // Finished tags, now moves will follow
-            readingMoves = true;
-            currentGame.Moves = ""; 
-            continue;
-          }
-          // If already reading moves and see an empty line, it might be end of a game.
-          continue;
-        }
-        if (trimmed.startsWith("[")) {
-          // PGN Tag line (e.g., [Event "..."])
-          if (currentGame && readingMoves) {
-            // If we were reading moves and encounter a new tag, previous game ended
-            currentGame.Moves = (currentGame.Moves || "").trim();
-            games.push(currentGame);
-            currentGame = null;
-            readingMoves = false;
-          }
-          if (!currentGame) currentGame = {};
-          // Parse the tag line inside [ ]
-          let tagContent = trimmed.slice(1, -1);  // remove [ and ]
-          const spaceIdx = tagContent.indexOf(" ");
-          if (spaceIdx !== -1) {
-            const tagName = tagContent.substring(0, spaceIdx);
-            let tagValue = tagContent.substring(spaceIdx + 1).trim();
-            if (tagValue.startsWith("\"") && tagValue.endsWith("\"")) {
-              tagValue = tagValue.slice(1, -1);  // remove surrounding quotes
-            }
-            currentGame[tagName] = tagValue;
-          }
-        } else {
-          // Moves line
-          if (currentGame) {
-            if (!readingMoves) {
-              readingMoves = true;
-              currentGame.Moves = "";
-            }
-            // Append moves (with a space separator)
-            currentGame.Moves += (currentGame.Moves ? " " : "") + trimmed;
-          }
-        }
-      }
-      // Push the last game (if any) after parsing all lines
-      if (currentGame) {
-        currentGame.Moves = (currentGame.Moves || "").trim();
-        games.push(currentGame);
-      }
-      return games;
+    const PGN_URL     = "https://live.idchess.com/download/shared/pgn/gs-eJ8OrndCwXa9d7thEJl1DyD2DNu7IxZBAlKBDIdkh315Ibjc6u_5jGnbAsw3Z?type=tournament";
+    const CORS_PROXY  = "https://api.allorigins.win/raw?url=";
+    const UPDATE_INT  = 2000;
+    const pieceTheme  = "https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png";
+
+    let gamesAll = [], games = [], rounds = [], round = null;
+    let modalBoard, modalChess, modalMoves = [], modalIdx = 0;
+
+    async function fetchPGN() {
+      const res = await fetch(CORS_PROXY + encodeURIComponent(PGN_URL), { mode: 'cors', cache: 'no-store' });
+      return await res.text();
     }
 
-    // Global variables for games data and current selection
-    let gamesAll = [];
-    let currentRound = "";
-    let openGameIndex = null;
-    const chess = new Chess();  // chess.js instance for game logic
-    let board = null;          // chessboard.js instance for the board
-
-    // Display games of the specified round
-    function showRound(round) {
-      currentRound = round;
-      const gamesListDiv = document.getElementById("gamesList");
-      gamesListDiv.innerHTML = "";  // clear existing list
-      let count = 0;
-      // Loop through all games and list those matching the round
-      gamesAll.forEach((game, idx) => {
-        if (game.Round === round) {
-          count++;
-          const item = document.createElement("div");
-          item.className = "game-item";
-          item.textContent = count + ". " + game.White + " – " + game.Black + " (" + game.Result + ")";
-          item.addEventListener("click", () => showGame(idx));
-          gamesListDiv.appendChild(item);
-        }
+    function buildRoundSelector(list) {
+      const container = $('#roundButtons').empty();
+      list.forEach(r => {
+        const btn = $(`<button class="round-btn">${r}</button>`);
+        btn.click(() => { round = r; renderBoards(); });
+        container.append(btn);
       });
     }
 
-    // Show a specific game in the modal by its index in gamesAll
-    function showGame(index) {
-      const game = gamesAll[index];
-      if (!game) return;
-      openGameIndex = index;  // remember which game is open
-      // Set modal title to "WhitePlayer – BlackPlayer (Result)"
-      document.getElementById("gameTitle").innerText = `${game.White} – ${game.Black} (${game.Result})`;
-      // Load the moves into the chess.js instance to get final position
-      chess.reset();
-      if (game.Moves) {
-        chess.load_pgn(game.Moves);  // parse moves (PGN string) into chess.js&#8203;:contentReference[oaicite:2]{index=2}
-      }
-      // Initialize chessboard.js if not already done
-      if (board === null) {
-        board = Chessboard('board', {
-          pieceTheme: 'img/chesspieces/wikipedia/{piece}.png',
-          position: 'start'
+    function parseAndInit(pgn) {
+      gamesAll = [];
+      rounds = [];
+      const secs = pgn.trim().split(/\r?\n\r?\n(?=\[TimeControl\])/);
+      secs.forEach(sec => {
+        const [tagsBlk, movesBlk] = sec.split(/\r?\n\r?\n/);
+        if (!movesBlk) return;
+        const tags = {};
+        tagsBlk.split(/\r?\n/).forEach(l => {
+          const m = l.match(/^\[([\w]+)\s+"(.+)"\]$/);
+          if (m) tags[m[1]] = m[2];
         });
+        if (tags.Round) {
+          rounds.push(tags.Round);
+          let mv = movesBlk
+            .replace(/\{[^}]*\}/g, "")
+            .replace(/\([^)]*\)/g, "")
+            .replace(/\d+\.{1,3}/g, "")
+            .replace(/1-0|0-1|1\/2-1\/2|\*/g, "")
+            .trim();
+          const arr = mv ? mv.split(/\s+/) : [];
+          const chess = new Chess();
+          arr.forEach(m => chess.move(m));
+          gamesAll.push({ tags, moves: arr, chess, board: null });
+        }
+      });
+      const unique = Array.from(new Set(rounds)).sort((a,b)=>+a - +b);
+      if (!round && unique.length) round = unique[0];
+      buildRoundSelector(unique);
+      games = gamesAll.filter(g => g.tags.Round === round);
+    }
+
+    function renderBoards() {
+      const c = $('#boardsContainer').empty();
+      games.forEach((g, i) => {
+        const div = $(
+          `<div class="board-container">
+             <div id="board${i}" class="chessboard"></div>
+             <div class="game-info">
+               <b>Белые:</b> ${g.tags.White||"?"}<br>
+               <b>Чёрные:</b> ${g.tags.Black||"?"}<br>
+               <b>Результат:</b> ${g.tags.Result||"*"}
+             </div>
+           </div>`);
+        c.append(div);
+        g.board = Chessboard(`board${i}`, { position: g.chess.fen(), pieceTheme, draggable: false });
+        div.click(() => openModal(i));
+      });
+      $('#eventTitle').text(gamesAll[0]?.tags.Event || "");
+    }
+
+    async function init() {
+      try {
+        const pgn = await fetchPGN();
+        parseAndInit(pgn);
+        renderBoards();
+      } catch {
+        $('#boardsContainer').text("Ошибка загрузки PGN");
       }
-      // Set the board to the final FEN position of the game
-      board.position(chess.fen());
-      // Display the moves text
-      document.getElementById("movesText").innerText = game.Moves || "";
-      // Show the modal
-      document.getElementById("modal").style.display = "block";
     }
 
-    // Close the modal and clear open game index
-    function closeModal() {
-      document.getElementById("modal").style.display = "none";
-      openGameIndex = null;
-    }
-
-    // Fetch and update the games list (called on interval)
-    function updateGames() {
-      fetch("CCL_Petrovskij_Putevoj_Dvorec_Na_razryad__rejting_do_1550_FShR__2009_g_r__i_molozhe_.pgn")
-        .then(response => response.text())
-        .then(text => {
-          const newGames = parsePGN(text);
-          // If games list changed or on first load, update global list and UI
-          gamesAll = newGames;
-          if (gamesAll.length) {
-            // Update Event title (assuming all games share the same Event)
-            document.getElementById("eventName").innerText = gamesAll[0].Event || "";
-          }
-          // Build unique rounds list and sort numerically (or lexically if needed)
-          const rounds = [...new Set(gamesAll.map(g => g.Round))];
-          rounds.sort((a, b) => {
-            // numeric sort if possible
-            const na = parseInt(a), nb = parseInt(b);
-            if (!isNaN(na) && !isNaN(nb)) return na - nb;
-            return a.localeCompare(b);
-          });
-          const roundSelect = document.getElementById("roundSelect");
-          // Update dropdown options if rounds changed in number or content
-          if (roundSelect.options.length !== rounds.length) {
-            const prevValue = roundSelect.value;
-            roundSelect.innerHTML = "";
-            rounds.forEach(r => {
-              const opt = document.createElement("option");
-              opt.value = r;
-              opt.textContent = "Тур " + r;
-              roundSelect.appendChild(opt);
-            });
-            // Preserve previously selected round if still available, otherwise select first
-            if (prevValue && rounds.includes(prevValue)) {
-              roundSelect.value = prevValue;
-              currentRound = prevValue;
-            } else {
-              currentRound = rounds[0] || "";
-              roundSelect.value = currentRound;
+    function setupUpdate() {
+      setInterval(async () => {
+        try {
+          const newPgn = await fetchPGN();
+          const oldMoves = gamesAll.map(g => g.moves);
+          parseAndInit(newPgn);
+          gamesAll.forEach((g, i) => {
+            const old = oldMoves[i] || [];
+            if (g.moves.length > old.length) {
+              g.moves.slice(old.length).forEach(m => g.chess.move(m));
+              g.board.position(g.chess.fen(), false);
             }
-          }
-          // Show games of the current round (update list)
-          if (currentRound) {
-            showRound(currentRound);
-          }
-          // If a game is open in the modal, update it (e.g., new moves added)
-          if (openGameIndex !== null) {
-            showGame(openGameIndex);
-          }
-        })
-        .catch(err => console.error("Error fetching PGN:", err));
+          });
+        } catch {}
+      }, UPDATE_INT);
     }
 
-    // Event: round selection changed
-    document.getElementById("roundSelect").addEventListener("change", function() {
-      showRound(this.value);
-    });
-    // Event: close modal on close button click or outside click
-    document.getElementById("closeBtn").addEventListener("click", closeModal);
-    window.addEventListener("click", function(e) {
-      if (e.target === document.getElementById("modal")) {
-        closeModal();
+    function openModal(i) {
+      const g = games[i]; modalChess = new Chess(); modalMoves = [...g.moves]; modalIdx = 0;
+      if (!modalBoard) {
+        modalBoard = Chessboard("modalBoard", { position: "start", pieceTheme, draggable: false, moveSpeed: 300 });
+      } else {
+        modalChess.reset(); modalBoard.start(false);
       }
-    });
+      $('#modal').css("display","flex");
+    }
+    function closeModal() { $('#modal').hide(); }
+    function nextMove() { if (modalIdx < modalMoves.length) { modalChess.move(modalMoves[modalIdx++]); modalBoard.position(modalChess.fen(), true); }}
+    function prevMove() { if (modalIdx > 0) { modalChess.undo(); modalIdx--; modalBoard.position(modalChess.fen(), true); }}
 
-    // Initial load and periodic refresh
-    updateGames();               // load once
-    setInterval(updateGames, 2000);  // auto-update every 2 seconds
+    $(init);
+    $(setupUpdate);
+    $(() => { $('#closeModal').click(closeModal); $('#nextBtn').click(nextMove); $('#prevBtn').click(prevMove); });
   </script>
-
 </body>
 </html>
