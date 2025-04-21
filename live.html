@@ -11,14 +11,17 @@
         crossorigin="anonymous">
   <style>
     body { margin: 0; padding: 20px; font-family: sans-serif; }
-    .board-container { display: inline-block; margin: 10px; text-align: center; vertical-align: top; }
+    .board-container { display: inline-block; margin: 10px; text-align: center; vertical-align: top; cursor: pointer; }
     .chessboard { width: 300px; }
-    .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
+    .game-info { font-size: 14px; margin-top: 6px; }
+    .modal { display: none; position: fixed; top:0; left:0; width:100%; height:100%; 
              background: rgba(0,0,0,0.7); align-items: center; justify-content: center; }
     .modal-content { position: relative; background: #f9f9f9; padding: 20px; border-radius: 5px; text-align: center; }
     #closeModal { position: absolute; top: 10px; right: 15px; font-size: 24px; font-weight: bold; cursor: pointer; }
     #closeModal:hover { color: #444; }
-    .instructions { font-size: 14px; color: #333; margin-top: 10px; }
+    #modalBoard { width: 300px; margin: auto; }
+    .controls { margin-top: 12px; }
+    .controls button { padding: 6px 12px; margin: 0 8px; font-size: 16px; }
   </style>
 </head>
 <body>
@@ -29,7 +32,10 @@
     <div class="modal-content">
       <span id="closeModal">&times;</span>
       <div id="modalBoard"></div>
-      <p class="instructions">Use &larr; and &rarr; keys to navigate moves</p>
+      <div class="controls">
+        <button id="prevBtn">&larr; Prev</button>
+        <button id="nextBtn">Next &rarr;</button>
+      </div>
     </div>
   </div>
 
@@ -45,268 +51,142 @@
           crossorigin="anonymous"></script>
 
   <script>
-    // Configuration constants
     const PGN_URL = "https://live.idchess.com/download/shared/pgn/gs-eJ8OrndCwXa9d7thEJl1DyD2DNu7IxZBAlKBDIdkh315Ibjc6u_5jGnbAsw3Z?type=tournament";
     const UPDATE_INTERVAL = 5000; // 5 seconds
     const pieceThemePath = "https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png";
 
-    // Data for games
-    let gamesData = [];
-    // Modal state
-    let modalBoard = null;
-    let modalChess = null;
-    let modalMoves = [];
-    let modalMoveIndex = 0;
-    let currentGameIndex = null;
+    let gamesData = [], modalBoard = null, modalChess = null, modalMoves = [], modalMoveIndex = 0;
 
-    // Utility: parse PGN text and update gamesData
     function parsePGNandInitGames(pgnText) {
       gamesData = [];
-      // Split PGN into individual games (only Round "1")
-      const gameSections = pgnText.trim().split(/\r?\n\r?\n(?=\[)/);
-      gameSections.forEach((gameStr) => {
-        // Separate tags and moves
-        const parts = gameStr.split(/\r?\n\r?\n/);
+      const sections = pgnText.trim().split(/\r?\n\r?\n(?=\[TimeControl)/);
+      sections.forEach(section => {
+        const parts = section.split(/\r?\n\r?\n/);
         if (parts.length < 2) return;
-        const tagsText = parts[0];
-        const movesText = parts[1];
-        // Parse tags
-        const tagLines = tagsText.split(/\r?\n/);
-        let tags = {};
-        tagLines.forEach(line => {
-          const match = line.match(/^\[([A-Za-z0-9_]+)\s*\"([^\"]*)\"\]$/);
-          if (match) {
-            tags[match[1]] = match[2];
-          }
+        const tagsText = parts[0], movesText = parts[1];
+        const tags = {};
+        tagsText.split(/\r?\n/).forEach(line => {
+          const m = line.match(/^\[([\w]+)\s+"(.+)"\]$/);
+          if (m) tags[m[1]] = m[2];
         });
-        // Filter by round = "1"
-        if (tags["Round"] !== "1") return;
-        const white = tags["White"] || "Unknown";
-        const black = tags["Black"] || "Unknown";
-        const result = tags["Result"] || "*";
-        // Parse moves into list (remove comments, variations, numbers, result)
-        let movesStr = movesText.replace(/\{[^}]*\}/g, "").replace(/\([^)]*\)/g, "");
-        movesStr = movesStr.replace(/(1-0|0-1|1\/2-1\/2|\*)\s*$/, "");
-        movesStr = movesStr.replace(/\d+\.{1,3}/g, ""); // remove move numbers and ellipses
-        movesStr = movesStr.trim();
-        const movesList = movesStr === "" ? [] : movesStr.split(/\s+/);
-        // Create chess instance and play moves to get final position
+        if (tags.Round !== "1") return;
+        let mv = movesText.replace(/\{[^}]*\}/g,"").replace(/\([^)]*\)/g,"")
+                          .replace(/\d+\.{1,3}/g,"")
+                          .replace(/1-0|0-1|1\/2-1\/2|\*/g,"")
+                          .trim();
+        const mvArr = mv ? mv.split(/\s+/) : [];
         const chess = new Chess();
-        for (let m of movesList) {
-          chess.move(m);
-        }
-        const finalFen = chess.fen();
-        gamesData.push({
-          white: white,
-          black: black,
-          result: result,
-          moves: movesList,
-          moveCount: movesList.length,
-          chess: chess,
-          board: null,
-          resultElem: null
-        });
+        mvArr.forEach(m => chess.move(m));
+        gamesData.push({ tags, moves: mvArr, chess, board: null });
       });
     }
 
-    // Initialize boards in DOM
     function renderBoards() {
       const container = document.getElementById("boardsContainer");
-      container.innerHTML = ""; // clear any loading text or previous content
-      gamesData.forEach((game, index) => {
-        // Create container div for each game
-        const gameDiv = document.createElement("div");
-        gameDiv.className = "board-container";
-        // Create board element
-        const boardDiv = document.createElement("div");
-        boardDiv.id = "board" + index;
-        boardDiv.className = "chessboard";
-        // Create info text element
-        const infoDiv = document.createElement("div");
-        infoDiv.className = "game-info";
-        infoDiv.innerHTML = `White: ${game.white}<br>Black: ${game.black}<br>Result: <span class="result-val">${game.result}</span>`;
-        // Append to container
-        gameDiv.appendChild(boardDiv);
-        gameDiv.appendChild(infoDiv);
-        container.appendChild(gameDiv);
-        // Initialize chessboard.js for this board
-        const board = Chessboard(boardDiv.id, {
-          pieceTheme: pieceThemePath,
+      container.innerHTML = "";
+      gamesData.forEach((game, idx) => {
+        const div = document.createElement("div");
+        div.className = "board-container";
+        div.innerHTML = `
+          <div id="board${idx}" class="chessboard"></div>
+          <div class="game-info">
+            White: ${game.tags.White || "?"}<br>
+            Black: ${game.tags.Black || "?"}<br>
+            Result: ${game.tags.Result || "*"}
+          </div>`;
+        container.appendChild(div);
+        const board = Chessboard(`board${idx}`, {
           position: game.chess.fen(),
-          showNotation: true,
+          pieceTheme: pieceThemePath,
           draggable: false
         });
         game.board = board;
-        game.resultElem = infoDiv.querySelector(".result-val");
-        // Click handler to open modal for this game
-        gameDiv.addEventListener("click", () => openModal(index));
+        div.addEventListener("click", () => openModal(idx));
       });
     }
 
-    // Fetch PGN data and initialize
     function loadInitialData() {
-      fetch(PGN_URL)
-        .then(response => response.text())
-        .then(text => {
-          parsePGNandInitGames(text);
-          renderBoards();
-        })
-        .catch(err => {
-          console.error("PGN load error:", err);
-          document.getElementById("boardsContainer").innerText = "Ошибка загрузки данных.";
-        });
+      fetch(PGN_URL).then(r=>r.text()).then(txt=>{
+        parsePGNandInitGames(txt);
+        renderBoards();
+      });
     }
 
-    // Update loop
     function setupAutoUpdate() {
-      setInterval(() => {
-        fetch(PGN_URL).then(res => res.text()).then(newText => {
-          // Split new PGN into games and filter round 1
-          const newSections = newText.trim().split(/\r?\n\r?\n(?=\[)/);
-          let newGames = [];
-          newSections.forEach(sec => {
-            const parts = sec.split(/\r?\n\r?\n/);
-            if (parts.length < 2) return;
-            const tagsText = parts[0];
-            const movesText = parts[1];
-            // get Round, White, Black, Result
-            const tagLines = tagsText.split(/\r?\n/);
-            let t = {};
-            tagLines.forEach(line => {
-              const m = line.match(/^\[([A-Za-z0-9_]+)\s*\"([^\"]*)\"\]$/);
-              if (m) t[m[1]] = m[2];
+      setInterval(()=>{
+        fetch(PGN_URL).then(r=>r.text()).then(txt=>{
+          const sections = txt.trim().split(/\r?\n\r?\n(?=\[TimeControl)/);
+          sections.forEach(section=>{
+            const parts = section.split(/\r?\n\r?\n/);
+            if (parts.length<2) return;
+            const tags = {};
+            parts[0].split(/\r?\n/).forEach(l=>{
+              const m = l.match(/^\[([\w]+)\s+"(.+)"\]$/);
+              if(m) tags[m[1]] = m[2];
             });
-            if (t["Round"] !== "1") return;
-            // Normalize moves text (same as in parsePGNandInitGames)
-            let mvStr = movesText.replace(/\{[^}]*\}/g, "").replace(/\([^)]*\)/g, "");
-            mvStr = mvStr.replace(/(1-0|0-1|1\/2-1\/2|\*)\s*$/, "");
-            mvStr = mvStr.replace(/\d+\.{1,3}/g, "");
-            mvStr = mvStr.trim();
-            const movesArr = mvStr === "" ? [] : mvStr.split(/\s+/);
-            newGames.push({
-              white: t["White"] || "Unknown",
-              black: t["Black"] || "Unknown",
-              result: t["Result"] || "*",
-              moves: movesArr
-            });
-          });
-          // Compare and update each game
-          newGames.forEach((newGame, i) => {
-            if (!gamesData[i]) return;
-            const oldGame = gamesData[i];
-            // If any difference in moves or result
-            const newCount = newGame.moves.length;
-            const oldCount = oldGame.moveCount;
-            const resultChanged = newGame.result !== oldGame.result;
-            let movesChanged = false;
-            // Check if moves lists differ
-            if (newCount !== oldCount) {
-              movesChanged = true;
-            } else {
-              for (let j = 0; j < newCount; j++) {
-                if (newGame.moves[j] !== oldGame.moves[j]) {
-                  movesChanged = true;
-                  break;
-                }
-              }
-            }
-            if (movesChanged || resultChanged) {
-              // Update moves if changed
-              if (movesChanged) {
-                if (newCount < oldCount || !oldGame.moves.slice(0, oldCount).every((m, idx) => m === newGame.moves[idx])) {
-                  // If moves were altered (not just appended) or removed, reload game fully
-                  oldGame.chess = new Chess();
-                  newGame.moves.forEach(mv => oldGame.chess.move(mv));
-                } else {
-                  // Moves only appended
-                  for (let k = oldCount; k < newCount; k++) {
-                    oldGame.chess.move(newGame.moves[k]);
-                  }
-                }
-                oldGame.moves = newGame.moves;
-                oldGame.moveCount = newCount;
-                // Update board position
-                const newFen = oldGame.chess.fen();
-                oldGame.board.position(newFen, false);
-              }
-              // Update result if changed
-              if (resultChanged) {
-                oldGame.result = newGame.result;
-                if (oldGame.resultElem) {
-                  oldGame.resultElem.textContent = newGame.result;
-                }
-              }
+            if (tags.Round!=="1") return;
+            const idx = parseInt(tags.Board,10)-1;
+            if (!gamesData[idx]) return;
+            let mv = parts[1].replace(/\{[^}]*\}/g,"").replace(/\([^)]*\)/g,"")
+                             .replace(/\d+\.{1,3}/g,"")
+                             .replace(/1-0|0-1|1\/2-1\/2|\*/g,"")
+                             .trim();
+            const newMoves = mv?mv.split(/\s+/):[];
+            const game = gamesData[idx];
+            if (newMoves.length>game.moves.length) {
+              newMoves.slice(game.moves.length).forEach(m=>game.chess.move(m));
+              game.moves=newMoves;
+              game.board.position(game.chess.fen(), false);
             }
           });
-        }).catch(err => console.error("Update fetch error:", err));
+        });
       }, UPDATE_INTERVAL);
     }
 
-    // Modal controls
-    function openModal(gameIndex) {
-      currentGameIndex = gameIndex;
-      const game = gamesData[gameIndex];
-      if (!game) return;
-      // Initialize modalChess and modalMoves
-      modalChess = new Chess(); // start fresh
-      modalMoves = game.moves.slice(); // copy moves list
+    function openModal(idx) {
+      const game = gamesData[idx];
+      modalChess = new Chess();
+      modalMoves = game.moves.slice();
       modalMoveIndex = 0;
-      // Show modal
-      const modalEl = document.getElementById("modal");
-      modalEl.style.display = "flex";
-      // Initialize modal board if not already
       if (!modalBoard) {
-        modalBoard = Chessboard('modalBoard', {
+        modalBoard = Chessboard("modalBoard", {
+          position: "start",
           pieceTheme: pieceThemePath,
-          showNotation: true,
           draggable: false,
           moveSpeed: 300
         });
+      } else {
+        modalChess.reset();
+        modalBoard.start(false);
       }
-      // Reset modal board to start position
-      modalBoard.start(false);
+      document.getElementById("modal").style.display = "flex";
     }
 
     function closeModal() {
       document.getElementById("modal").style.display = "none";
-      currentGameIndex = null;
     }
 
     function nextMove() {
-      if (!modalChess || modalMoveIndex >= modalMoves.length) return;
-      const move = modalMoves[modalMoveIndex];
-      modalChess.move(move);
-      modalMoveIndex++;
+      if (modalMoveIndex>=modalMoves.length) return;
+      modalChess.move(modalMoves[modalMoveIndex++]);
       modalBoard.position(modalChess.fen(), true);
     }
 
     function prevMove() {
-      if (!modalChess || modalMoveIndex <= 0) return;
+      if (modalMoveIndex<=0) return;
       modalChess.undo();
       modalMoveIndex--;
       modalBoard.position(modalChess.fen(), true);
     }
 
-    // Event listeners for modal navigation and closing
-    document.getElementById("closeModal").onclick = closeModal;
-    document.getElementById("modal").addEventListener("click", (e) => {
-      if (e.target.id === "modal") closeModal();
-    });
-    document.addEventListener("keydown", (e) => {
-      if (document.getElementById("modal").style.display === "flex") {
-        if (e.key === "ArrowRight") {
-          nextMove();
-        } else if (e.key === "ArrowLeft") {
-          prevMove();
-        } else if (e.key === "Escape") {
-          closeModal();
-        }
-      }
-    });
-
-    // Initialize on page load
-    loadInitialData();
-    setupAutoUpdate();
+    // hookup controls
+    window.onload = () => {
+      loadInitialData();
+      setupAutoUpdate();
+      document.getElementById("closeModal").onclick = closeModal;
+      document.getElementById("nextBtn").onclick   = nextMove;
+      document.getElementById("prevBtn").onclick   = prevMove;
+    };
   </script>
 </body>
 </html>
