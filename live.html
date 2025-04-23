@@ -5,15 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Live Chess Round 1</title>
 
-  <!-- DNS Prefetch & Preconnect to speed up resource loading -->
-  <link rel="dns-prefetch" href="//live.idchess.com">
-  <link rel="dns-prefetch" href="//api.allorigins.win">
+  <!-- (Можно оставить preconnect, но главное — fallback прямой запрос PGN) -->
   <link rel="preconnect" href="https://live.idchess.com">
-  <link rel="preconnect" href="https://api.allorigins.win">
+  <link rel="preconnect" href="https://api.allorigins.win"/>
 
-  <!-- Preload and load Chessboard.css as early as possible -->
-  <link rel="preload" as="style"
-        href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
+  <!-- Основной CSS -->
   <link rel="stylesheet"
         href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css"
         crossorigin="anonymous"/>
@@ -50,7 +46,7 @@
     </div>
   </div>
 
-  <!-- Скрипты с defer, чтобы не блокировать отрисовку -->
+  <!-- Скрипты с defer -->
   <script src="https://code.jquery.com/jquery-3.5.1.min.js"
           crossorigin="anonymous" defer></script>
   <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"
@@ -65,12 +61,18 @@
 
     let games = [], modalBoard, modalChess, modalMoves = [], modalIdx = 0;
 
+    // Попытка прямого fetch (если CORS позволяет) и fallback на прокси
     async function fetchPGN() {
-      const res = await fetch(CORS_PROXY + encodeURIComponent(PGN_URL), {
-        mode: 'cors',
-        cache: 'no-store'
-      });
-      return await res.text();
+      try {
+        const direct = await fetch(PGN_URL, { mode: 'cors', cache: 'no-store' });
+        if (direct.ok) return await direct.text();
+        throw new Error('CORS blocked');
+      } catch {
+        const proxied = await fetch(CORS_PROXY + encodeURIComponent(PGN_URL), {
+          cache: 'no-store'
+        });
+        return await proxied.text();
+      }
     }
 
     function parseAndInit(pgn) {
