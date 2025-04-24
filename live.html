@@ -18,16 +18,31 @@
     .game-info b { width:70px; display:inline-block; }
     #modal { display:none; position:fixed; top:0; left:0; width:100%; height:100%;
              background:rgba(0,0,0,0.7); align-items:center; justify-content:center; }
-    .modal-content { position:relative; background:#f9f9f9; padding:20px; width:360px;
+    .modal-content { position:relative; background:#f9f9f9; padding:20px; width:380px;
                      border-radius:5px; text-align:center; z-index:1000; }
     #closeModal { position:absolute; top:10px; right:15px; font-size:24px; cursor:pointer; z-index:1001; }
     #modalBoard { width:300px; margin:auto; }
     .controls { margin-top:12px; }
     .controls button { padding:6px 12px; margin:0 8px; font-size:16px; }
-    #notation { margin-top:12px; text-align:left; max-height:200px; overflow-y:auto;
-                border-top:1px solid #ccc; padding-top:10px; font-size:14px; }
-    #notation div { cursor: pointer; padding:2px 4px; }
-    #notation div.current { background: #ffff99; }
+    #notation {
+      margin-top:12px;
+      text-align:left;
+      max-height:200px;
+      overflow-x:auto;
+      white-space:nowrap;
+      font-size:14px;
+      padding:8px;
+      border-top:1px solid #ccc;
+    }
+    #notation span {
+      cursor:pointer;
+      margin-right:6px;
+      padding:2px 4px;
+      border-radius:3px;
+    }
+    #notation span.current {
+      background: #ffff99;
+    }
   </style>
 </head>
 <body>
@@ -109,8 +124,8 @@
 
     function renderBoards(round) {
       const cont = $("#boardsContainer").empty();
-      (allGamesByRound[round]||[]).forEach((g, i) => {
-        const id  = `r${round}-${i}`;
+      (allGamesByRound[round]||[]).forEach((g,i) => {
+        const id = `r${round}-${i}`;
         const html = $(`
           <div class="board-container">
             <div id="board${id}" class="chessboard"></div>
@@ -147,16 +162,23 @@
         modalChess.reset();
         modalBoard.start(false);
       }
+
       const notationDiv = $("#notation").empty();
       modalMoves.forEach((move, idx) => {
-        const num = (idx % 2 === 0) ? `${Math.floor(idx/2)+1}. ` : "";
-        notationDiv.append(`<div data-index="${idx}">${num}${move}</div>`);
+        const label = (idx % 2 === 0) ? `${Math.floor(idx/2)+1}.` : "";
+        notationDiv.append(`
+          <span data-index="${idx}">
+            ${label}${move}
+          </span>
+        `);
       });
-      // клик по любому полю-полуходу
-      $("#notation div").click(function() {
+
+      // клик по нотации
+      $("#notation span").click(function() {
         const idx = +this.getAttribute("data-index");
         goToMove(idx);
       });
+
       $("#modal").fadeIn(150);
       highlightMove(-1);
     }
@@ -164,9 +186,9 @@
     function closeModal() { $("#modal").fadeOut(150); }
 
     function highlightMove(idx) {
-      $("#notation div").removeClass("current");
+      $("#notation span").removeClass("current");
       if (idx >= 0) {
-        const el = $(`#notation div[data-index="${idx}"]`);
+        const el = $(`#notation span[data-index="${idx}"]`);
         el.addClass("current");
         el[0].scrollIntoView({ behavior: "smooth", block: "nearest" });
       }
@@ -175,9 +197,7 @@
     function goToMove(idx) {
       modalChess.reset();
       modalBoard.start(false);
-      for (let i = 0; i <= idx; i++) {
-        modalChess.move(modalMoves[i]);
-      }
+      for (let i = 0; i <= idx; i++) modalChess.move(modalMoves[i]);
       modalBoard.position(modalChess.fen(), true);
       modalIdx = idx + 1;
       highlightMove(idx);
@@ -205,8 +225,8 @@
         const pgn = await fetchPGN();
         parsePGN(pgn);
         renderRoundSelector();
-      } catch (err) {
-        console.error(err);
+      } catch (e) {
+        console.error(e);
         $("#boardsContainer").text("Ошибка загрузки PGN");
       }
       $("#closeModal").click(closeModal);
