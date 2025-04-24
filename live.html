@@ -3,15 +3,15 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Live Chess Round</title>
+  <title>Live Chess Viewer</title>
   <link rel="stylesheet"
         href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css"
         crossorigin="anonymous"/>
   <style>
     body { margin:0; padding:20px; font-family:sans-serif; text-align:center; }
     #eventTitle { font-size:24px; font-weight:bold; margin-bottom:8px; }
-    #eventInfo { font-size:16px; margin-bottom:20px; }
-    .round-header { font-size:20px; font-weight:600; margin:24px 0 12px; }
+    #eventInfo { font-size:16px; margin-bottom:12px; }
+    #roundSelector { font-size:16px; margin-bottom:16px; padding:6px 12px; }
     .board-container { display:inline-block; margin:10px; vertical-align:top; cursor:pointer; }
     .chessboard { width:300px; }
     .game-info { text-align:left; font-size:14px; margin-top:6px; }
@@ -28,6 +28,7 @@
 <body>
   <div id="eventTitle">Загрузка…</div>
   <div id="eventInfo">CCL. Петровский Путевой Дворец. На разряд: рейтинг до 1550 ФШР, 2009 г.р. и моложе.</div>
+  <select id="roundSelector"></select>
   <div id="boardsContainer">Загрузка партий…</div>
 
   <!-- Модалка -->
@@ -49,29 +50,31 @@
   <script>
     const PGN_URL    = "https://live.idchess.com/download/shared/pgn/gs-eJ8OrndCwXa9d7thEJl1DyD2DNu7IxZBAlKBDIdkh315Ibjc6u_5jGnbAsw3Z?type=tournament";
     const CORS_PROXY = "https://api.allorigins.win/raw?url=";
-    const UPDATE_INT = 2000;
     const pieceTheme = "https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png";
 
-    let games = [], modalBoard, modalChess, modalMoves = [], modalIdx = 0;
+    let allGamesByRound = {};
+    let modalBoard, modalChess, modalMoves = [], modalIdx = 0;
 
     async function fetchPGN() {
       const res = await fetch(CORS_PROXY + encodeURIComponent(PGN_URL), { cache: 'no-store' });
       return await res.text();
     }
 
-    function parseAndInit(pgn) {
-      games = [];
-      // разделяем на секции по [TimeControl]
-      const secs = pgn.trim().split(/\r?\n\r?\n(?=\[TimeControl)/);
-      secs.forEach(sec => {
-        const [tagsBlk, movesBlk] = sec.split(/\r?\n\r?\n/);
+    function parsePGN(pgn) {
+      allGamesByRound = {};
+      const games = pgn.trim().split(/\r?\n\r?\n(?=\[Event )/);
+
+      games.forEach(g => {
+        const [tagsBlk, movesBlk] = g.split(/\r?\n\r?\n/);
         if (!movesBlk) return;
+
         const tags = {};
         tagsBlk.split(/\r?\n/).forEach(line => {
           const m = line.match(/^\[([\w]+)\s+"(.+)"\]$/);
           if (m) tags[m[1]] = m[2];
         });
-        // вырезаем ненужное из ходов
+
+        const round = tags.Round || "?";
         let mv = movesBlk
           .replace(/\{[^}]*\}/g, "")
           .replace(/\([^)]*\)/g, "")
@@ -81,81 +84,61 @@
         const arr = mv ? mv.split(/\s+/) : [];
         const chess = new Chess();
         arr.forEach(m => chess.move(m));
-        games.push({ tags, moves: arr, chess, board: null });
+
+        if (!allGamesByRound[round]) allGamesByRound[round] = [];
+        allGamesByRound[round].push({ tags, moves: arr, chess });
       });
     }
 
-    function renderBoards() {
+    function renderRoundSelector() {
+      const select = $("#roundSelector").empty();
+      const roundNumbers = Object.keys(allGamesByRound).sort((a, b) => Number(a) - Number(b));
+      roundNumbers.forEach(r => {
+        select.append(`<option value="${r}">Тур ${r}</option>`);
+      });
+
+      // По умолчанию — последний тур
+      const lastRound = roundNumbers[roundNumbers.length - 1];
+      select.val(lastRound);
+      renderBoards(lastRound);
+
+      select.on("change", () => {
+        const selectedRound = select.val();
+        renderBoards(selectedRound);
+      });
+    }
+
+    function renderBoards(round) {
       const container = $("#boardsContainer").empty();
-      // группируем по номеру тура
-      const byRound = {};
-      games.forEach(g => {
-        const r = g.tags.Round || "?";
-        if (!byRound[r]) byRound[r] = [];
-        byRound[r].push(g);
-      });
-      // сортируем номера туров по числу
-      Object.keys(byRound)
-        .sort((a, b) => Number(a) - Number(b))
-        .forEach(roundNum => {
-          // заголовок тура
-          container.append(`<div class="round-header">Тур ${roundNum}</div>`);
-          // доски тура
-          byRound[roundNum].forEach((g, i) => {
-            const idx = roundNum + "-" + i;
-            const html = $(`
-              <div class="board-container">
-                <div id="board${idx}" class="chessboard"></div>
-                <div class="game-info">
-                  <b>Белые:</b> ${g.tags.White||"?"}<br>
-                  <b>Чёрные:</b> ${g.tags.Black||"?"}<br>
-                  <b>Результат:</b> ${g.tags.Result||"*"}
-                </div>
-              </div>
-            `);
-            container.append(html);
-            g.board = Chessboard(`board${idx}`, {
-              position: g.chess.fen(),
-              pieceTheme,
-              draggable: false
-            });
-            html.click(() => openModal(g));
-          });
+      const games = allGamesByRound[round] || [];
+      games.forEach((g, i) => {
+        const idx = `r${round}-${i}`;
+        const html = $(`
+          <div class="board-container">
+            <div id="board${idx}" class="chessboard"></div>
+            <div class="game-info">
+              <b>Белые:</b> ${g.tags.White || "?"}<br>
+              <b>Чёрные:</b> ${g.tags.Black || "?"}<br>
+              <b>Результат:</b> ${g.tags.Result || "*"}
+            </div>
+          </div>
+        `);
+        container.append(html);
+        g.board = Chessboard(`board${idx}`, {
+          position: g.chess.fen(),
+          pieceTheme,
+          draggable: false
         });
-      $("#eventTitle").text(games[0]?.tags.Event || "");
-    }
+        html.click(() => openModal(g));
+      });
 
-    async function init() {
-      try {
-        const pgn = await fetchPGN();
-        parseAndInit(pgn);
-        renderBoards();
-      } catch {
-        $("#boardsContainer").text("Ошибка загрузки PGN");
-      }
-    }
-
-    function setupUpdate() {
-      setInterval(async () => {
-        try {
-          const newPgn   = await fetchPGN();
-          const oldMoves = games.map(g => g.moves);
-          parseAndInit(newPgn);
-          games.forEach((g, i) => {
-            const old = oldMoves[i]||[];
-            if (g.moves.length > old.length) {
-              g.moves.slice(old.length).forEach(m => g.chess.move(m));
-              g.board.position(g.chess.fen(), false);
-            }
-          });
-        } catch {}
-      }, UPDATE_INT);
+      $("#eventTitle").text(games[0]?.tags.Event || "Шахматный турнир");
     }
 
     function openModal(game) {
       modalChess = new Chess();
       modalMoves = [...game.moves];
-      modalIdx   = 0;
+      modalIdx = 0;
       if (!modalBoard) {
         modalBoard = Chessboard("modalBoard", {
           position: "start",
@@ -182,9 +165,16 @@
       modalBoard.position(modalChess.fen(), true);
     }
 
-    $(document).ready(function() {
-      init();
-      setupUpdate();
+    $(document).ready(async function () {
+      try {
+        const pgn = await fetchPGN();
+        parsePGN(pgn);
+        renderRoundSelector();
+      } catch (err) {
+        console.error(err);
+        $("#boardsContainer").text("Ошибка загрузки PGN");
+      }
+
       $("#closeModal").click(closeModal);
       $("#nextBtn").click(nextMove);
       $("#prevBtn").click(prevMove);
