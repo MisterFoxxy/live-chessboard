@@ -49,18 +49,18 @@
   </div>
 
   <!-- Скрипты -->
-  <script src="https://code.jquery.com/jquery-3.5.1.min.js" crossorigin="anonymous"></script>
-  <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js" crossorigin="anonymous"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js" crossorigin="anonymous"></script>
+  <script src="https://code.jquery.com/jquery-3.5.1.min.js"
+          crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"
+          crossorigin="anonymous"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js"
+          crossorigin="anonymous"></script>
   <script>
     const PGN_URL    = "https://live.idchess.com/download/shared/pgn/gs-eJ8OrndCwXa9d7thEJl1DyD2DNu7IxZBAlKBDIdkh315Ibjc6u_5jGnbAsw3Z?type=tournament";
     const CORS_PROXY = "https://api.allorigins.win/raw?url=";
-    const UPDATE_INT = 2000;
     const pieceTheme = "https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png";
 
-    // Здесь будем хранить игры сгруппированные по номеру тура
-    let allGamesByRound = {};
-    let modalBoard, modalChess, modalMoves = [], modalIdx = 0;
+    let allGamesByRound = {}, modalBoard, modalChess, modalMoves = [], modalIdx = 0;
 
     // 1) Скачиваем PGN через прокси
     async function fetchPGN() {
@@ -71,21 +71,18 @@
     // 2) Парсим PGN и группируем по Round
     function parsePGN(pgn) {
       allGamesByRound = {};
-      // Разбиваем на блоки по пустой строке перед следующим [Event
-      const blocks = pgn.trim().split(/\r?\n\r?\n(?=\[Event\s)/);
+      // Разбиваем блоки по пустой строке перед тегом [
+      const blocks = pgn.trim().split(/\r?\n\s*\r?\n(?=\[)/);
 
       blocks.forEach(block => {
         const [tagsBlk, movesBlk] = block.split(/\r?\n\r?\n/);
         if (!movesBlk) return;
-        // Считываем теги
         const tags = {};
         tagsBlk.split(/\r?\n/).forEach(line => {
           const m = line.match(/^\[([\w]+)\s+"(.+)"\]$/);
           if (m) tags[m[1]] = m[2];
         });
-        // Номер тура
         const round = tags.Round || "?";
-        // Чистим текст ходов
         const clean = movesBlk
           .replace(/\{[^}]*\}/g, "")
           .replace(/\([^)]*\)/g, "")
@@ -95,13 +92,13 @@
         const arr   = clean ? clean.split(/\s+/) : [];
         const chess = new Chess();
         arr.forEach(m => chess.move(m));
-        // Добавляем в объект
+
         if (!allGamesByRound[round]) allGamesByRound[round] = [];
         allGamesByRound[round].push({ tags, moves: arr, chess });
       });
     }
 
-    // 3) Рисуем селект и повесим обработчик
+    // 3) Рисуем селект и вешаем обработчик
     function renderRoundSelector() {
       const sel    = $("#roundSelector").empty();
       const rounds = Object.keys(allGamesByRound)
@@ -109,18 +106,13 @@
                            .sort((a,b) => Number(a) - Number(b));
       rounds.forEach(r => sel.append(`<option value="${r}">Тур ${r}</option>`));
 
-      // По умолчанию — последний тур
       const last = rounds[rounds.length - 1];
       sel.val(last);
-
-      // При смене селекта перерисовываем доски
       sel.on("change", () => renderBoards(sel.val()));
-
-      // И сразу отрисуем
       renderBoards(last);
     }
 
-    // 4) Отрисовать доски выбранного тура
+    // 4) Отрисовываем доски выбранного тура
     function renderBoards(round) {
       const cont = $("#boardsContainer").empty();
       const list = allGamesByRound[round] || [];
@@ -137,20 +129,17 @@
           </div>
         `);
         cont.append(html);
-        // Запускаем доску
         g.board = Chessboard(`board${id}`, {
           position: g.chess.fen(),
           pieceTheme,
           draggable: false
         });
-        // Клик для модалки
         html.click(() => openModal(g));
       });
-      // Заголовок события
       $("#eventTitle").text(list[0]?.tags.Event || "Шахматный турнир");
     }
 
-    // Модалка
+    // 5) Модалка для просмотра ходов
     function openModal(game) {
       modalChess = new Chess();
       modalMoves = [...game.moves];
@@ -183,7 +172,7 @@
       }
     }
 
-    // 5) Стартуем всё после загрузки DOM
+    // 6) Запуск после загрузки DOM
     $(async () => {
       try {
         const pgn = await fetchPGN();
@@ -194,7 +183,6 @@
         $("#boardsContainer").text("Ошибка загрузки PGN");
       }
       $("#closeModal").click(closeModal);
-      $("#nextBtn").click(prevMove);
       $("#prevBtn").click(prevMove);
       $("#nextBtn").click(nextMove);
     });
