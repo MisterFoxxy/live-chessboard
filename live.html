@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Live Chess Viewer</title>
+  <title>Live Chess 1Viewer</title>
   <link rel="stylesheet"
         href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css"
         crossorigin="anonymous"/>
@@ -27,7 +27,9 @@
 </head>
 <body>
   <div id="eventTitle">Загрузка…</div>
-  <div id="eventInfo">CCL. Петровский Путевой Дворец. На разряд: рейтинг до 1550 ФШР, 2009 г.р. и моложе.</div>
+  <div id="eventInfo">
+    CCL. Петровский Путевой Дворец. На разряд: рейтинг до 1550 ФШР, 2009 г.р. и моложе.
+  </div>
   <select id="roundSelector"></select>
   <div id="boardsContainer">Загрузка партий…</div>
 
@@ -55,33 +57,35 @@
     let allGamesByRound = {};
     let modalBoard, modalChess, modalMoves = [], modalIdx = 0;
 
+    // 1) Скачиваем PGN через прокси
     async function fetchPGN() {
       const res = await fetch(CORS_PROXY + encodeURIComponent(PGN_URL), { cache: 'no-store' });
       return await res.text();
     }
 
+    // 2) Парсим PGN и группируем по Round
     function parsePGN(pgn) {
       allGamesByRound = {};
-      const games = pgn.trim().split(/\r?\n\r?\n(?=\[Event )/);
+      // каждый блок от [Event ...] до пустой строки
+      const games = pgn.trim().split(/\r?\n\r?\n(?=\[Event\s)/);
 
-      games.forEach(g => {
-        const [tagsBlk, movesBlk] = g.split(/\r?\n\r?\n/);
+      games.forEach(block => {
+        const [tagsBlk, movesBlk] = block.split(/\r?\n\r?\n/);
         if (!movesBlk) return;
-
         const tags = {};
         tagsBlk.split(/\r?\n/).forEach(line => {
           const m = line.match(/^\[([\w]+)\s+"(.+)"\]$/);
           if (m) tags[m[1]] = m[2];
         });
-
         const round = tags.Round || "?";
-        let mv = movesBlk
+        // убираем комментарии и номера ходов
+        const cleanMoves = movesBlk
           .replace(/\{[^}]*\}/g, "")
           .replace(/\([^)]*\)/g, "")
           .replace(/\d+\.{1,3}/g, "")
           .replace(/1-0|0-1|1\/2-1\/2|\*/g, "")
           .trim();
-        const arr = mv ? mv.split(/\s+/) : [];
+        const arr   = cleanMoves ? cleanMoves.split(/\s+/) : [];
         const chess = new Chess();
         arr.forEach(m => chess.move(m));
 
@@ -90,55 +94,52 @@
       });
     }
 
+    // 3) Заполняем селект турами и выставляем обработчик
     function renderRoundSelector() {
-      const select = $("#roundSelector").empty();
-      const roundNumbers = Object.keys(allGamesByRound).sort((a, b) => Number(a) - Number(b));
-      roundNumbers.forEach(r => {
-        select.append(`<option value="${r}">Тур ${r}</option>`);
-      });
+      const select       = $("#roundSelector").empty();
+      const rounds       = Object.keys(allGamesByRound).sort((a,b)=>Number(a)-Number(b));
+      rounds.forEach(r => select.append(`<option value="${r}">Тур ${r}</option>`));
 
-      // По умолчанию — последний тур
-      const lastRound = roundNumbers[roundNumbers.length - 1];
-      select.val(lastRound);
-      renderBoards(lastRound);
+      // по умолчанию — последний тур
+      const last = rounds[rounds.length-1];
+      select.val(last);
+      renderBoards(last);
 
-      select.on("change", () => {
-        const selectedRound = select.val();
-        renderBoards(selectedRound);
-      });
+      select.on("change", () => renderBoards(select.val()));
     }
 
+    // 4) Рендерим доски для выбранного тура
     function renderBoards(round) {
       const container = $("#boardsContainer").empty();
-      const games = allGamesByRound[round] || [];
-      games.forEach((g, i) => {
-        const idx = `r${round}-${i}`;
+      const list      = allGamesByRound[round]||[];
+      list.forEach((g,i) => {
+        const id  = `r${round}-${i}`;
         const html = $(`
           <div class="board-container">
-            <div id="board${idx}" class="chessboard"></div>
+            <div id="board${id}" class="chessboard"></div>
             <div class="game-info">
-              <b>Белые:</b> ${g.tags.White || "?"}<br>
-              <b>Чёрные:</b> ${g.tags.Black || "?"}<br>
-              <b>Результат:</b> ${g.tags.Result || "*"}
+              <b>Белые:</b> ${g.tags.White||"?"}<br>
+              <b>Чёрные:</b> ${g.tags.Black||"?"}<br>
+              <b>Результат:</b> ${g.tags.Result||"*"}
             </div>
           </div>
         `);
         container.append(html);
-        g.board = Chessboard(`board${idx}`, {
+        g.board = Chessboard(`board${id}`, {
           position: g.chess.fen(),
           pieceTheme,
           draggable: false
         });
         html.click(() => openModal(g));
       });
-
-      $("#eventTitle").text(games[0]?.tags.Event || "Шахматный турнир");
+      $("#eventTitle").text(list[0]?.tags.Event || "Шахматный турнир");
     }
 
+    // 5) Модалка для просмотра ходов
     function openModal(game) {
       modalChess = new Chess();
       modalMoves = [...game.moves];
-      modalIdx = 0;
+      modalIdx   = 0;
       if (!modalBoard) {
         modalBoard = Chessboard("modalBoard", {
           position: "start",
@@ -150,34 +151,36 @@
         modalChess.reset();
         modalBoard.start(false);
       }
-      $("#modal").css("display", "flex");
+      $("#modal").show();
     }
     function closeModal() { $("#modal").hide(); }
     function nextMove() {
-      if (modalIdx >= modalMoves.length) return;
-      modalChess.move(modalMoves[modalIdx++]);
-      modalBoard.position(modalChess.fen(), true);
+      if (modalIdx < modalMoves.length) {
+        modalChess.move(modalMoves[modalIdx++]);
+        modalBoard.position(modalChess.fen(), true);
+      }
     }
     function prevMove() {
-      if (modalIdx <= 0) return;
-      modalChess.undo();
-      modalIdx--;
-      modalBoard.position(modalChess.fen(), true);
+      if (modalIdx > 0) {
+        modalChess.undo();
+        modalIdx--;
+        modalBoard.position(modalChess.fen(), true);
+      }
     }
 
-    $(document).ready(async function () {
+    // 6) Инициализация
+    $(async function(){
       try {
         const pgn = await fetchPGN();
         parsePGN(pgn);
         renderRoundSelector();
-      } catch (err) {
-        console.error(err);
+      } catch(e) {
+        console.error(e);
         $("#boardsContainer").text("Ошибка загрузки PGN");
       }
-
       $("#closeModal").click(closeModal);
-      $("#nextBtn").click(nextMove);
       $("#prevBtn").click(prevMove);
+      $("#nextBtn").click(nextMove);
     });
   </script>
 </body>
