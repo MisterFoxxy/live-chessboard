@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Live Chess 1Viewer</title>
+  <title>Live Chess Viewer</title>
   <link rel="stylesheet"
         href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css"
         crossorigin="anonymous"/>
@@ -30,7 +30,10 @@
   <div id="eventInfo">
     CCL. Петровский Путевой Дворец. На разряд: рейтинг до 1550 ФШР, 2009 г.р. и моложе.
   </div>
+
+  <!-- Селект выбора тура -->
   <select id="roundSelector"></select>
+
   <div id="boardsContainer">Загрузка партий…</div>
 
   <!-- Модалка -->
@@ -52,8 +55,10 @@
   <script>
     const PGN_URL    = "https://live.idchess.com/download/shared/pgn/gs-eJ8OrndCwXa9d7thEJl1DyD2DNu7IxZBAlKBDIdkh315Ibjc6u_5jGnbAsw3Z?type=tournament";
     const CORS_PROXY = "https://api.allorigins.win/raw?url=";
+    const UPDATE_INT = 2000;
     const pieceTheme = "https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png";
 
+    // Здесь будем хранить игры сгруппированные по номеру тура
     let allGamesByRound = {};
     let modalBoard, modalChess, modalMoves = [], modalIdx = 0;
 
@@ -66,76 +71,86 @@
     // 2) Парсим PGN и группируем по Round
     function parsePGN(pgn) {
       allGamesByRound = {};
-      // каждый блок от [Event ...] до пустой строки
-      const games = pgn.trim().split(/\r?\n\r?\n(?=\[Event\s)/);
+      // Разбиваем на блоки по пустой строке перед следующим [Event
+      const blocks = pgn.trim().split(/\r?\n\r?\n(?=\[Event\s)/);
 
-      games.forEach(block => {
+      blocks.forEach(block => {
         const [tagsBlk, movesBlk] = block.split(/\r?\n\r?\n/);
         if (!movesBlk) return;
+        // Считываем теги
         const tags = {};
         tagsBlk.split(/\r?\n/).forEach(line => {
           const m = line.match(/^\[([\w]+)\s+"(.+)"\]$/);
           if (m) tags[m[1]] = m[2];
         });
+        // Номер тура
         const round = tags.Round || "?";
-        // убираем комментарии и номера ходов
-        const cleanMoves = movesBlk
+        // Чистим текст ходов
+        const clean = movesBlk
           .replace(/\{[^}]*\}/g, "")
           .replace(/\([^)]*\)/g, "")
           .replace(/\d+\.{1,3}/g, "")
           .replace(/1-0|0-1|1\/2-1\/2|\*/g, "")
           .trim();
-        const arr   = cleanMoves ? cleanMoves.split(/\s+/) : [];
+        const arr   = clean ? clean.split(/\s+/) : [];
         const chess = new Chess();
         arr.forEach(m => chess.move(m));
-
+        // Добавляем в объект
         if (!allGamesByRound[round]) allGamesByRound[round] = [];
         allGamesByRound[round].push({ tags, moves: arr, chess });
       });
     }
 
-    // 3) Заполняем селект турами и выставляем обработчик
+    // 3) Рисуем селект и повесим обработчик
     function renderRoundSelector() {
-      const select       = $("#roundSelector").empty();
-      const rounds       = Object.keys(allGamesByRound).sort((a,b)=>Number(a)-Number(b));
-      rounds.forEach(r => select.append(`<option value="${r}">Тур ${r}</option>`));
+      const sel    = $("#roundSelector").empty();
+      const rounds = Object.keys(allGamesByRound)
+                           .filter(r => r !== "?")
+                           .sort((a,b) => Number(a) - Number(b));
+      rounds.forEach(r => sel.append(`<option value="${r}">Тур ${r}</option>`));
 
-      // по умолчанию — последний тур
-      const last = rounds[rounds.length-1];
-      select.val(last);
+      // По умолчанию — последний тур
+      const last = rounds[rounds.length - 1];
+      sel.val(last);
+
+      // При смене селекта перерисовываем доски
+      sel.on("change", () => renderBoards(sel.val()));
+
+      // И сразу отрисуем
       renderBoards(last);
-
-      select.on("change", () => renderBoards(select.val()));
     }
 
-    // 4) Рендерим доски для выбранного тура
+    // 4) Отрисовать доски выбранного тура
     function renderBoards(round) {
-      const container = $("#boardsContainer").empty();
-      const list      = allGamesByRound[round]||[];
-      list.forEach((g,i) => {
+      const cont = $("#boardsContainer").empty();
+      const list = allGamesByRound[round] || [];
+      list.forEach((g, i) => {
         const id  = `r${round}-${i}`;
         const html = $(`
           <div class="board-container">
             <div id="board${id}" class="chessboard"></div>
             <div class="game-info">
-              <b>Белые:</b> ${g.tags.White||"?"}<br>
-              <b>Чёрные:</b> ${g.tags.Black||"?"}<br>
-              <b>Результат:</b> ${g.tags.Result||"*"}
+              <b>Белые:</b> ${g.tags.White || "?"}<br>
+              <b>Чёрные:</b> ${g.tags.Black || "?"}<br>
+              <b>Результат:</b> ${g.tags.Result || "*"}
             </div>
           </div>
         `);
-        container.append(html);
+        cont.append(html);
+        // Запускаем доску
         g.board = Chessboard(`board${id}`, {
           position: g.chess.fen(),
           pieceTheme,
           draggable: false
         });
+        // Клик для модалки
         html.click(() => openModal(g));
       });
+      // Заголовок события
       $("#eventTitle").text(list[0]?.tags.Event || "Шахматный турнир");
     }
 
-    // 5) Модалка для просмотра ходов
+    // Модалка
     function openModal(game) {
       modalChess = new Chess();
       modalMoves = [...game.moves];
@@ -168,17 +183,18 @@
       }
     }
 
-    // 6) Инициализация
-    $(async function(){
+    // 5) Стартуем всё после загрузки DOM
+    $(async () => {
       try {
         const pgn = await fetchPGN();
         parsePGN(pgn);
         renderRoundSelector();
-      } catch(e) {
-        console.error(e);
+      } catch (err) {
+        console.error(err);
         $("#boardsContainer").text("Ошибка загрузки PGN");
       }
       $("#closeModal").click(closeModal);
+      $("#nextBtn").click(prevMove);
       $("#prevBtn").click(prevMove);
       $("#nextBtn").click(nextMove);
     });
