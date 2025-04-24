@@ -36,12 +36,9 @@
     CCL. Петровский Путевой Дворец. На разряд: рейтинг до 1550 ФШР, 2009 г.р. и моложе.
   </div>
 
-  <!-- Селект выбора тура -->
   <select id="roundSelector"></select>
-
   <div id="boardsContainer">Загрузка партий…</div>
 
-  <!-- Модалка -->
   <div id="modal">
     <div class="modal-content">
       <span id="closeModal">&times;</span>
@@ -54,7 +51,6 @@
     </div>
   </div>
 
-  <!-- Скрипты -->
   <script src="https://code.jquery.com/jquery-3.5.1.min.js"
           crossorigin="anonymous"></script>
   <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"
@@ -113,16 +109,15 @@
 
     function renderBoards(round) {
       const cont = $("#boardsContainer").empty();
-      const list = allGamesByRound[round] || [];
-      list.forEach((g, i) => {
+      (allGamesByRound[round]||[]).forEach((g, i) => {
         const id  = `r${round}-${i}`;
         const html = $(`
           <div class="board-container">
             <div id="board${id}" class="chessboard"></div>
             <div class="game-info">
-              <b>Белые:</b> ${g.tags.White || "?"}<br>
-              <b>Чёрные:</b> ${g.tags.Black || "?"}<br>
-              <b>Результат:</b> ${g.tags.Result || "*"}
+              <b>Белые:</b> ${g.tags.White||"?"}<br>
+              <b>Чёрные:</b> ${g.tags.Black||"?"}<br>
+              <b>Результат:</b> ${g.tags.Result||"*"}
             </div>
           </div>
         `);
@@ -134,7 +129,7 @@
         });
         html.click(() => openModal(g));
       });
-      $("#eventTitle").text(list[0]?.tags.Event || "Шахматный турнир");
+      $("#eventTitle").text((allGamesByRound[round]||[])[0]?.tags.Event || "Шахматный турнир");
     }
 
     function openModal(game) {
@@ -152,22 +147,14 @@
         modalChess.reset();
         modalBoard.start(false);
       }
-      // Построение нотации
       const notationDiv = $("#notation").empty();
-      for (let i = 0; i < modalMoves.length; i += 2) {
-        const num   = Math.floor(i/2) + 1;
-        const white = modalMoves[i]   || "";
-        const black = modalMoves[i+1] || "";
-        const idx   = i;
-        notationDiv.append(`
-          <div data-index="${idx}">
-            <strong>${num}.</strong>&nbsp;${white}&nbsp;${black}
-          </div>
-        `);
-      }
-      // Клик по нотации — перейти к ходу
+      modalMoves.forEach((move, idx) => {
+        const num = (idx % 2 === 0) ? `${Math.floor(idx/2)+1}. ` : "";
+        notationDiv.append(`<div data-index="${idx}">${num}${move}</div>`);
+      });
+      // клик по любому полю-полуходу
       $("#notation div").click(function() {
-        const idx = Number(this.getAttribute("data-index"));
+        const idx = +this.getAttribute("data-index");
         goToMove(idx);
       });
       $("#modal").fadeIn(150);
@@ -179,8 +166,9 @@
     function highlightMove(idx) {
       $("#notation div").removeClass("current");
       if (idx >= 0) {
-        $(`#notation div[data-index="${idx}"]`).addClass("current")[0]
-          .scrollIntoView({ behavior: "smooth", block: "nearest" });
+        const el = $(`#notation div[data-index="${idx}"]`);
+        el.addClass("current");
+        el[0].scrollIntoView({ behavior: "smooth", block: "nearest" });
       }
     }
 
