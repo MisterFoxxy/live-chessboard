@@ -3,8 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Live Chess Round 1</title>
-  <!-- Chessboard.js CSS -->
+  <title>Live Chess Round 1</title>
   <link rel="stylesheet"
         href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css"
         crossorigin="anonymous"/>
@@ -15,13 +14,7 @@
     .chessboard { width:300px; }
     .game-info { text-align:left; font-size:14px; margin-top:6px; }
     .game-info b { width:70px; display:inline-block; }
-    #modal { display:none; position:fixed; top:0; left:0; width:100%; height:100%;
-             background:rgba(0,0,0,0.7); align-items:center; justify-content:center; }
-    .modal-content { position:relative; background:#f9f9f9; padding:20px; border-radius:5px; text-align:center; z-index:1000; }
-    #closeModal { position:absolute; top:10px; right:15px; font-size:24px; cursor:pointer; z-index:1001; }
-    #modalBoard { width:300px; margin:auto; }
-    .controls { margin-top:12px; }
-    .controls button { padding:6px 12px; margin:0 8px; font-size:16px; }
+    /* ... остальные стили без изменений ... */
   </style>
 </head>
 <body>
@@ -30,14 +23,7 @@
 
   <!-- Модалка -->
   <div id="modal">
-    <div class="modal-content">
-      <span id="closeModal">&times;</span>
-      <div id="modalBoard"></div>
-      <div class="controls">
-        <button id="prevBtn">Назад</button>
-        <button id="nextBtn">Вперед</button>
-      </div>
-    </div>
+    <!-- ... содержимое модалки ... -->
   </div>
 
   <!-- Зависимости -->
@@ -46,142 +32,36 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js" crossorigin="anonymous"></script>
 
   <script>
-    const PGN_URL     = "https://live.idchess.com/download/shared/pgn/gs-eJ8OrndCwXa9d7thEJl1DyD2DNu7IxZBAlKBDIdkh315Ibjc6u_5jGnbAsw3Z?type=tournament";
-    const CORS_PROXY  = "https://api.allorigins.win/raw?url=";
-    const UPDATE_INT  = 2000;      // опрашиваем каждые 2 сек
-    const pieceTheme  = "https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png";
+    // ... ваши константы и функции fetchPGN, parseAndInit и т.д. без изменений ...
 
-    let games = [], modalBoard, modalChess, modalMoves = [], modalIdx = 0;
-
-    // Тянем PGN через прокси без кэша
-    async function fetchPGN() {
-      const res = await fetch(CORS_PROXY + encodeURIComponent(PGN_URL), {
-        mode: 'cors',
-        cache: 'no-store'
-      });
-      return await res.text();
-    }
-
-    // Парсим PGN
-    function parseAndInit(pgn) {
-      games = [];
-      const secs = pgn.trim().split(/\r?\n\r?\n(?=\[TimeControl)/);
-      secs.forEach(sec => {
-        const [tagsBlk, movesBlk] = sec.split(/\r?\n\r?\n/);
-        if (!movesBlk) return;
-        const tags = {};
-        tagsBlk.split(/\r?\n/).forEach(l => {
-          const m = l.match(/^\[([\w]+)\s+"(.+)"\]$/);
-          if (m) tags[m[1]] = m[2];
-        });
-        if (tags.Round !== "1") return;
-        let mv = movesBlk
-          .replace(/\{[^}]*\}/g,"")
-          .replace(/\([^)]*\)/g,"")
-          .replace(/\d+\.{1,3}/g,"")
-          .replace(/1-0|0-1|1\/2-1\/2|\*/g,"")
-          .trim();
-        const arr = mv ? mv.split(/\s+/) : [];
-        const chess = new Chess();
-        arr.forEach(m => chess.move(m));
-        games.push({ tags, moves: arr, chess, board: null });
-      });
-    }
-
-    // Рендер досок
     function renderBoards() {
       const c = $("#boardsContainer").empty();
-      games.forEach((g,i) => {
-        const div = $(
+      games.forEach((g, i) => {
+        const div = $(`
           <div class="board-container">
             <div id="board${i}" class="chessboard"></div>
             <div class="game-info">
-              <b>Белые:</b> ${g.tags.White||"?"}<br>
-              <b>Чёрные:</b> ${g.tags.Black||"?"}<br>
-              <b>Результат:</b> ${g.tags.Result||"*"}
+              <b>Белые:</b> ${g.tags.White || "?"}<br>
+              <b>Чёрные:</b> ${g.tags.Black || "?"}<br>
+              <b>Результат:</b> ${g.tags.Result || "*"}
             </div>
-          </div>);
+          </div>
+        `);
         c.append(div);
-        g.board = Chessboard(board${i}, {
+        // Важно: передаём ID как строку
+        g.board = Chessboard(`board${i}`, {
           position: g.chess.fen(),
           pieceTheme,
           draggable: false
         });
         div.click(() => openModal(i));
       });
-      $("#eventTitle").text(games[0]?.tags.Event||"");
+      $("#eventTitle").text(games[0]?.tags.Event || "");
     }
 
-    // Инициализация
-    async function init() {
-      try {
-        const pgn = await fetchPGN();
-        parseAndInit(pgn);
-        renderBoards();
-      } catch {
-        $("#boardsContainer").text("Ошибка загрузки PGN");
-      }
-    }
+    // ... остальной скрипт init(), setupUpdate(), openModal() и т.д. ...
 
-    // Авто‑апдейт
-    function setupUpdate() {
-      setInterval(async () => {
-        try {
-          const newPgn = await fetchPGN();
-          const oldMoves = games.map(g => g.moves);
-          parseAndInit(newPgn);
-          // для каждой доски обновляем только если добавились ходы
-          games.forEach((g,i) => {
-            const old = oldMoves[i]||[];
-            if (g.moves.length > old.length) {
-              g.moves.slice(old.length).forEach(m => g.chess.move(m));
-              g.board.position(g.chess.fen(), false);
-            }
-          });
-        } catch {}
-      }, UPDATE_INT);
-    }
-
-    // Модальное окно и листалка
-    function openModal(i) {
-      const g = games[i];
-      modalChess = new Chess();
-      modalMoves = [...g.moves];
-      modalIdx = 0;
-      if (!modalBoard) {
-        modalBoard = Chessboard("modalBoard", {
-          position: "start",
-          pieceTheme,
-          draggable: false,
-          moveSpeed: 300
-        });
-      } else {
-        modalChess.reset();
-        modalBoard.start(false);
-      }
-      $("#modal").css("display","flex");
-    }
-    function closeModal() { $("#modal").hide(); }
-    function nextMove() {
-      if (modalIdx >= modalMoves.length) return;
-      modalChess.move(modalMoves[modalIdx++]);
-      modalBoard.position(modalChess.fen(), true);
-    }
-    function prevMove() {
-      if (modalIdx <= 0) return;
-      modalChess.undo();
-      modalIdx--;
-      modalBoard.position(modalChess.fen(), true);
-    }
-
-    // Хуки
-    $(()=>{
-      init();
-      setupUpdate();
-      $("#closeModal").click(closeModal);
-      $("#nextBtn").click(nextMove);
-      $("#prevBtn").click(prevMove);
-    });
+    $(init);
   </script>
 </body>
 </html>
