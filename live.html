@@ -26,6 +26,7 @@
     .controls button { padding:6px 12px; margin:0 8px; font-size:16px; }
     #notation { margin-top:12px; text-align:left; max-height:200px; overflow-y:auto;
                 border-top:1px solid #ccc; padding-top:10px; font-size:14px; }
+    #notation div { cursor: pointer; padding:2px 4px; }
     #notation div.current { background: #ffff99; }
   </style>
 </head>
@@ -67,18 +68,14 @@
 
     let allGamesByRound = {}, modalBoard, modalChess, modalMoves = [], modalIdx = 0;
 
-    // 1) Скачиваем PGN через прокси
     async function fetchPGN() {
       const res = await fetch(CORS_PROXY + encodeURIComponent(PGN_URL), { cache: 'no-store' });
       return await res.text();
     }
 
-    // 2) Парсим PGN и группируем по Round
     function parsePGN(pgn) {
       allGamesByRound = {};
-      // Разбиваем блоки по пустой строке перед тегом [
       const blocks = pgn.trim().split(/\r?\n\s*\r?\n(?=\[)/);
-
       blocks.forEach(block => {
         const [tagsBlk, movesBlk] = block.split(/\r?\n\r?\n/);
         if (!movesBlk) return;
@@ -97,27 +94,23 @@
         const arr   = clean ? clean.split(/\s+/) : [];
         const chess = new Chess();
         arr.forEach(m => chess.move(m));
-
         if (!allGamesByRound[round]) allGamesByRound[round] = [];
         allGamesByRound[round].push({ tags, moves: arr, chess });
       });
     }
 
-    // 3) Рисуем селект и вешаем обработчик
     function renderRoundSelector() {
       const sel    = $("#roundSelector").empty();
       const rounds = Object.keys(allGamesByRound)
                            .filter(r => r !== "?")
                            .sort((a,b) => Number(a) - Number(b));
       rounds.forEach(r => sel.append(`<option value="${r}">Тур ${r}</option>`));
-
       const last = rounds[rounds.length - 1];
       sel.val(last);
       sel.on("change", () => renderBoards(sel.val()));
       renderBoards(last);
     }
 
-    // 4) Отрисовываем доски выбранного тура
     function renderBoards(round) {
       const cont = $("#boardsContainer").empty();
       const list = allGamesByRound[round] || [];
@@ -144,13 +137,10 @@
       $("#eventTitle").text(list[0]?.tags.Event || "Шахматный турнир");
     }
 
-    // 5) Модалка для просмотра ходов + нотация
     function openModal(game) {
       modalChess = new Chess();
       modalMoves = [...game.moves];
       modalIdx   = 0;
-
-      // Отрисовать доску
       if (!modalBoard) {
         modalBoard = Chessboard("modalBoard", {
           position: "start",
@@ -162,24 +152,47 @@
         modalChess.reset();
         modalBoard.start(false);
       }
-
-      // Построить нотацию
+      // Построение нотации
       const notationDiv = $("#notation").empty();
       for (let i = 0; i < modalMoves.length; i += 2) {
         const num   = Math.floor(i/2) + 1;
         const white = modalMoves[i]   || "";
         const black = modalMoves[i+1] || "";
-        notationDiv.append(`<div data-index="${i}">${num}. ${white} ${black}</div>`);
+        const idx   = i;
+        notationDiv.append(`
+          <div data-index="${idx}">
+            <strong>${num}.</strong>&nbsp;${white}&nbsp;${black}
+          </div>
+        `);
       }
-
-      // Показать модалку
-      $("#modal").fadeIn(100);
+      // Клик по нотации — перейти к ходу
+      $("#notation div").click(function() {
+        const idx = Number(this.getAttribute("data-index"));
+        goToMove(idx);
+      });
+      $("#modal").fadeIn(150);
+      highlightMove(-1);
     }
-    function closeModal() { $("#modal").fadeOut(100); }
+
+    function closeModal() { $("#modal").fadeOut(150); }
 
     function highlightMove(idx) {
       $("#notation div").removeClass("current");
-      $(`#notation div[data-index="${idx}"]`).addClass("current")[0]?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      if (idx >= 0) {
+        $(`#notation div[data-index="${idx}"]`).addClass("current")[0]
+          .scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+    }
+
+    function goToMove(idx) {
+      modalChess.reset();
+      modalBoard.start(false);
+      for (let i = 0; i <= idx; i++) {
+        modalChess.move(modalMoves[i]);
+      }
+      modalBoard.position(modalChess.fen(), true);
+      modalIdx = idx + 1;
+      highlightMove(idx);
     }
 
     function nextMove() {
@@ -195,11 +208,10 @@
         modalChess.undo();
         modalIdx--;
         modalBoard.position(modalChess.fen(), true);
-        highlightMove(modalIdx);
+        highlightMove(modalIdx - 1);
       }
     }
 
-    // 6) Старт после загрузки
     $(async () => {
       try {
         const pgn = await fetchPGN();
