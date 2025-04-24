@@ -28,17 +28,19 @@
       margin-top:12px;
       text-align:left;
       max-height:200px;
-      overflow-x:auto;
-      white-space:nowrap;
+      overflow-y:auto;       /* вертикальный скролл, если очень много строк */
+      display:flex;
+      flex-wrap: wrap;       /* перенос ходов на новую строку */
+      gap:6px;
       font-size:14px;
       padding:8px;
       border-top:1px solid #ccc;
     }
     #notation span {
       cursor:pointer;
-      margin-right:6px;
       padding:2px 4px;
       border-radius:3px;
+      background: #f0f0f0;
     }
     #notation span.current {
       background: #ffff99;
@@ -166,14 +168,9 @@
       const notationDiv = $("#notation").empty();
       modalMoves.forEach((move, idx) => {
         const label = (idx % 2 === 0) ? `${Math.floor(idx/2)+1}.` : "";
-        notationDiv.append(`
-          <span data-index="${idx}">
-            ${label}${move}
-          </span>
-        `);
+        notationDiv.append(`<span data-index="${idx}">${label}${move}</span>`);
       });
 
-      // клик по нотации
       $("#notation span").click(function() {
         const idx = +this.getAttribute("data-index");
         goToMove(idx);
