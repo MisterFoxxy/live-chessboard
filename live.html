@@ -88,17 +88,25 @@
       border-radius: var(--radius);
       padding: 20px;
       position: relative;
-      width: 400px; max-width: 90%;
+      width: 90vw;
+      max-width: 400px;
+      max-height: 90vh;
+      overflow-y: auto;
       text-align: center;
     }
     #closeModal {
       position: absolute;
-      top: 12px; right: 16px;
-      font-size: 24px;
+      top: 8px; right: 8px;
+      font-size: 28px;
       color: var(--text-light);
+      background: rgba(255,255,255,0.8);
+      border-radius: 50%;
+      width: 32px; height: 32px;
+      display: flex; align-items: center; justify-content: center;
+      z-index: 1001;
       cursor: pointer;
     }
-    .chessboard { width: 300px; margin: auto; }
+    .chessboard { width: 100%; max-width: 300px; margin: auto; }
     .controls { margin-top: 12px; }
     .controls button {
       padding: 6px 12px; margin: 0 8px; font-size: 16px;
@@ -133,8 +141,8 @@
   </div>
 
   <div id="modal">
+    <span id="closeModal">&times;</span>
     <div class="modal-content">
-      <span id="closeModal">&times;</span>
       <div id="modalBoard"></div>
       <div class="controls">
         <button id="prevBtn">Назад</button>
@@ -158,6 +166,7 @@
     let tournaments = [], currentIdx = 0;
     let modalBoard, modalChess, modalMoves = [], modalIdx = 0;
     let touchStartX = null;
+    let touchStartY = null;
 
     async function fetchPGN(url) {
       const res = await fetch(CORS_PROXY + encodeURIComponent(url), { cache: 'no-store' });
@@ -196,10 +205,7 @@
       const sel = $("#eventSelector").empty();
       tournaments.forEach((t, i) => sel.append(`<option value="${i}">${t.event}</option>`));
       sel.val(currentIdx);
-      sel.on("change", () => {
-        currentIdx = +sel.val();
-        renderRoundSelector();
-      });
+      sel.on("change", () => { currentIdx = +sel.val(); renderRoundSelector(); });
     }
 
     function renderRoundSelector() {
@@ -208,8 +214,7 @@
                            .sort((a,b)=>Number(a)-Number(b));
       const sel = $("#roundSelector").empty();
       rounds.forEach(r => sel.append(`<option value="${r}">Тур ${r}</option>`));
-      let last = rounds[rounds.length-1];
-      sel.val(last);
+      let last = rounds[rounds.length-1]; sel.val(last);
       sel.on("change", () => renderBoards(sel.val()));
       renderBoards(last);
     }
@@ -221,99 +226,72 @@
         const id = `t${currentIdx}r${round}i${i}`;
         const card = $(`<div class="card board-container"></div>`);
         card.append(`<div id="board${id}" class="chessboard"></div>`);
-        card.append(`<div class="game-info"><b>Белые:</b> ${g.tags.White||"?"}<br><b>Чёрные:</b> ${g.tags.Black||"?"}<br><b>Результат:</b> ${g.tags.Result||"*"}<\/div>`);
+        card.append(`<div class="game-info"><b>Белые:</b> ${g.tags.White||"?"}<br><b>Чёрные:</b> ${g.tags.Black||"?"}<br><b>Результат:</b> ${g.tags.Result||"*"}</div>`);
         cont.append(card);
-        g.board = Chessboard(`board${id}`, {
-          position: g.chess.fen(),
-          pieceTheme, draggable: false
-        });
+        g.board = Chessboard(`board${id}`, { position: g.chess.fen(), pieceTheme, draggable: false });
         card.click(() => openModal(g));
       });
       $("#eventTitle").text(tournaments[currentIdx].event);
     }
 
     function openModal(game) {
-      modalChess = new Chess();
-      modalMoves = [...game.moves];
-      modalIdx = 0;
+      modalChess = new Chess(); modalMoves = [...game.moves]; modalIdx = 0;
       $("#modal").addClass("show");
       if (!modalBoard) {
-        modalBoard = Chessboard("modalBoard", {
-          position: "start",
-          pieceTheme, draggable: false, moveSpeed: 300
-        });
+        modalBoard = Chessboard("modalBoard", { position:"start", pieceTheme, draggable:false, moveSpeed:300 });
       } else {
-        modalChess.reset();
-        modalBoard.start(false);
-        modalBoard.resize();
+        modalChess.reset(); modalBoard.start(false); modalBoard.resize();
       }
       const notationDiv = $("#notation").empty();
       modalMoves.forEach((mv,idx) => {
-        const lbl = (idx%2===0) ? `${Math.floor(idx/2)+1}.` : "";
-        notationDiv.append(`<span data-index="${idx}">${lbl}${mv}<\/span>`);
+        const lbl = (idx%2===0)?`${Math.floor(idx/2)+1}.` : "";
+        notationDiv.append(`<span data-index="${idx}">${lbl}${mv}</span>`);
       });
-      $("#notation span").click(function(){
-        goToMove(+this.dataset.index);
-      });
+      $("#notation span").click(function(){ goToMove(+this.dataset.index); });
       // клавиатура
       document.onkeydown = e => {
         if (!$("#modal").hasClass("show")) return;
-        if (e.key === "ArrowRight" || e.key === " " ) { e.preventDefault(); nextMove(); }
+        if (e.key === "ArrowRight" || e.key === " ") { e.preventDefault(); nextMove(); }
         if (e.key === "ArrowLeft") { e.preventDefault(); prevMove(); }
       };
       // клик по доске
       $("#modalBoard").off("click").on("click", nextMove);
-      // свайп
+      // свайп по доске
       const mb = document.getElementById("modalBoard");
-      mb.ontouchstart = e => { touchStartX = e.changedTouches[0].clientX; };
+      mb.ontouchstart = e => { touchStartX = e.changedTouches[0].clientX; touchStartY = e.changedTouches[0].clientY; };
       mb.ontouchend = e => {
         let dx = e.changedTouches[0].clientX - touchStartX;
-        if (dx > 50) prevMove();
-        else if (dx < -50) nextMove();
+        let dy = e.changedTouches[0].clientY - touchStartY;
+        if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 30) {
+          if (dx > 0) prevMove(); else nextMove();
+        }
+      };
+      // свайп по нотации
+      const nt = document.getElementById("notation");
+      nt.ontouchstart = e => { touchStartX = e.changedTouches[0].clientX; };
+      nt.ontouchend = e => {
+        let dx = e.changedTouches[0].clientX - touchStartX;
+        if (Math.abs(dx) > 30) {
+          if (dx > 0) prevMove(); else nextMove();
+        }
       };
       highlightMove(-1);
     }
-
-    function closeModal() {
-      $("#modal").removeClass("show");
-      document.onkeydown = null;
-    }
-
+    function closeModal() { $("#modal").removeClass("show"); document.onkeydown = null; }
     function highlightMove(idx) {
       $("#notation span").removeClass("current");
       if (idx >= 0) {
         const el = $(`#notation span[data-index="${idx}"]`);
-        el.addClass("current");
-        el[0].scrollIntoView({ behavior: "smooth", block: "nearest" });
+        el.addClass("current"); el[0].scrollIntoView({behavior:"smooth",block:"nearest"});
       }
     }
-
     function goToMove(idx) {
-      modalChess.reset();
-      modalBoard.start(false);
+      modalChess.reset(); modalBoard.start(false);
       for (let i = 0; i <= idx; i++) modalChess.move(modalMoves[i]);
-      modalBoard.position(modalChess.fen(), true);
-      modalIdx = idx + 1;
-      highlightMove(idx);
+      modalBoard.position(modalChess.fen(), true); modalIdx = idx+1; highlightMove(idx);
     }
-
-    function nextMove() {
-      if (modalIdx < modalMoves.length) {
-        modalChess.move(modalMoves[modalIdx]);
-        modalIdx++;
-        modalBoard.position(modalChess.fen(), true);
-        highlightMove(modalIdx - 1);
-      }
-    }
-
-    function prevMove() {
-      if (modalIdx > 0) {
-        modalChess.undo();
-        modalIdx--;
-        modalBoard.position(modalChess.fen(), true);
-        highlightMove(modalIdx - 1);
-      }
-    }
+    function nextMove() { if (modalIdx < modalMoves.length) { modalChess.move(modalMoves[modalIdx]); modalIdx++; modalBoard.position(modalChess.fen(), true); highlightMove(modalIdx-1); } }
+    function prevMove() { if (modalIdx > 0) { modalChess.undo(); modalIdx--; modalBoard.position(modalChess.fen(), true); highlightMove(modalIdx-1); } }
 
     $(async () => {
       try {
@@ -321,8 +299,7 @@
           let pgn = await fetchPGN(url);
           tournaments.push(parsePGNtoTournament(pgn));
         }
-        renderEventSelector();
-        renderRoundSelector();
+        renderEventSelector(); renderRoundSelector();
       } catch (e) {
         console.error(e);
         $("#boardsContainer").text("Ошибка загрузки PGN");
