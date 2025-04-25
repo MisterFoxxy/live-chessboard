@@ -93,7 +93,6 @@
       display: flex;
       opacity: 1;
     }
-    /* Крестик вынесен поверх всего */
     #closeModal {
       position: fixed;
       top: 16px; right: 16px;
@@ -128,27 +127,28 @@
       padding: 6px 12px;
       font-size: 16px;
     }
+    /* Нотация в одну строку, излишек скрывается */
     #notation {
       margin-top: 12px;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
+      white-space: nowrap;
+      overflow-x: hidden;
       font-size: 14px;
       padding: 8px;
       border-top: 1px solid #ccc;
-      justify-content: center;
     }
     #notation span {
-      cursor: pointer; padding: 4px 6px; border-radius: 4px;
+      display: inline-block;
+      cursor: pointer;
+      padding: 4px 6px;
+      border-radius: 4px;
       background: var(--bg-page);
       transition: background var(--transition), color var(--transition);
+      margin-right: 6px;
     }
-    #notation span:hover,
     #notation span.current {
       background: var(--accent);
       color: #fff;
     }
-
     @media (max-width: 480px) {
       header {
         flex-direction: column;
@@ -174,7 +174,6 @@
   </div>
 
   <div id="modal">
-    <!-- Крестик всегда сверху -->
     <span id="closeModal">&times;</span>
     <div class="modal-content">
       <div id="modalBoard"></div>
