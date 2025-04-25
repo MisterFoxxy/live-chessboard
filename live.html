@@ -93,7 +93,7 @@
       display: flex;
       opacity: 1;
     }
-    /* крестик всегда виден поверх */
+    /* крестик всегда сверху */
     #closeModal {
       position: fixed;
       top: 16px; right: 16px;
@@ -115,20 +115,16 @@
       z-index: 1001;
     }
     .chessboard {
-      width: 300px;
-      margin: auto;
+      width: 300px; margin: auto;
     }
     .controls {
       margin-top: 12px;
-      display: flex;
-      justify-content: center;
-      gap: 8px;
+      display: flex; justify-content: center; gap: 8px;
     }
     .controls button {
-      padding: 6px 12px;
-      font-size: 16px;
+      padding: 6px 12px; font-size: 16px;
     }
-    /* нотация: одна строка, скрытый скроллбар */
+    /* нотация: горизонтальный скролл без видимого ползунка */
     #notation {
       margin-top: 12px;
       white-space: nowrap;
@@ -140,7 +136,7 @@
     #notation::-webkit-scrollbar {
       display: none; /* Chrome, Safari */
     }
-    #notation span {
+    #notation .move {
       display: inline-block;
       cursor: pointer;
       padding: 4px 6px;
@@ -149,7 +145,7 @@
       transition: background var(--transition), color var(--transition);
       margin-right: 6px;
     }
-    #notation span.current {
+    #notation .move.active {
       background: var(--accent);
       color: #fff;
     }
@@ -158,9 +154,7 @@
         flex-direction: column;
         align-items: stretch;
       }
-      select {
-        max-width: none;
-      }
+      select { max-width: none; }
       #boardsContainer {
         grid-template-columns: 1fr !important;
       }
@@ -172,7 +166,6 @@
     <select id="eventSelector"></select>
     <select id="roundSelector"></select>
   </header>
-
   <div id="boardsContainer"><p>Загрузка партий…</p></div>
 
   <div id="modal">
@@ -187,20 +180,23 @@
     </div>
   </div>
 
-  <script src="https://code.jquery.com/jquery-3.5.1.min.js" crossorigin="anonymous"></script>
-  <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js" crossorigin="anonymous"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js" crossorigin="anonymous"></script>
+  <script src="https://code.jquery.com/jquery-3.5.1.min.js"
+          crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"
+          crossorigin="anonymous"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js"
+          crossorigin="anonymous"></script>
   <script>
     const PGN_SOURCES = [
       "https://live.idchess.com/download/shared/pgn/gs-eJ8OrndCwXa9d7thEJl1DyD2DNu7IxZBAlKBDIdkh315Ibjc6u_5jGnbAsw3Z?type=tournament",
       "https://live.idchess.com/download/shared/pgn/gs-eJ8OrndCwXa9d7eJEJl1DyD2DNu7IxZBAlKBDIdkh314Cbjc6u_5jGnbAsw3Z?type=tournament"
     ];
-    const CORS_PROXY = "https://api.allorigins.win/raw?url=";
-    const pieceTheme = "https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png";
+    const CORS_PROXY  = "https://api.allorigins.win/raw?url=";
+    const pieceTheme  = "https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png";
 
     let tournaments = [], currentIdx = 0;
     let modalBoard, modalChess, modalMoves = [], modalIdx = 0;
-    let swipeStartX = null, swipeStartY = null, swipeStartTime = null;
+    let observer = null, currentObservedIdx = null;
 
     async function fetchPGN(url) {
       const res = await fetch(CORS_PROXY + encodeURIComponent(url), { cache: 'no-store' });
@@ -211,23 +207,24 @@
       const blocks = pgn.trim().split(/\r?\n\s*\r?\n(?=\[)/);
       let gamesByRound = {}, eventName = "";
       blocks.forEach(block => {
-        const [tagsBlk,movesBlk] = block.split(/\r?\n\r?\n/);
+        const [tagsBlk, movesBlk] = block.split(/\r?\n\r?\n/);
         if (!movesBlk) return;
         let tags = {};
-        tagsBlk.split(/\r?\n/).forEach(line=>{
+        tagsBlk.split(/\r?\n/).forEach(line => {
           let m = line.match(/^\[([\w]+)\s+"(.+)"\]$/);
-          if(m) tags[m[1]] = m[2];
+          if (m) tags[m[1]] = m[2];
         });
-        if(!eventName && tags.Event) eventName = tags.Event;
-        const round = tags.Round||"?";
+        if (!eventName && tags.Event) eventName = tags.Event;
+        const round = tags.Round || "?";
         let clean = movesBlk
           .replace(/\{[^}]*\}/g,"")
           .replace(/\([^)]*\)/g,"")
           .replace(/\d+\.{1,3}/g,"")
           .replace(/1-0|0-1|1\/2-1\/2|\*/g,"")
           .trim();
-        let arr = clean? clean.split(/\s+/): [];
-        let chess = new Chess(); arr.forEach(mv=>chess.move(mv));
+        let arr = clean ? clean.split(/\s+/) : [];
+        let chess = new Chess();
+        arr.forEach(mv => chess.move(mv));
         gamesByRound[round] = gamesByRound[round]||[];
         gamesByRound[round].push({ tags, moves: arr, chess });
       });
@@ -236,9 +233,9 @@
 
     function renderEventSelector() {
       const sel = $("#eventSelector").empty();
-      tournaments.forEach((t,i)=>sel.append(`<option value="${i}">${t.event}</option>`));
-      sel.val(currentIdx).on("change",()=>{
-        currentIdx=+sel.val();
+      tournaments.forEach((t,i) => sel.append(`<option value="${i}">${t.event}</option>`));
+      sel.val(currentIdx).on("change", ()=>{
+        currentIdx = +sel.val();
         renderRoundSelector();
       });
     }
@@ -248,9 +245,9 @@
                            .filter(r=>r!=="?")
                            .sort((a,b)=>Number(a)-Number(b));
       const sel = $("#roundSelector").empty();
-      rounds.forEach(r=>sel.append(`<option value="${r}">Тур ${r}</option>`));
+      rounds.forEach(r => sel.append(`<option value="${r}">Тур ${r}</option>`));
       const last = rounds[rounds.length-1];
-      sel.val(last).on("change",()=>renderBoards(sel.val()));
+      sel.val(last).on("change", ()=> renderBoards(sel.val()));
       renderBoards(last);
     }
 
@@ -258,122 +255,139 @@
       const list = tournaments[currentIdx].gamesByRound[round]||[];
       const cont = $("#boardsContainer").empty();
       list.forEach((g,i)=>{
-        const id=`t${currentIdx}r${round}i${i}`;
+        const id = `t${currentIdx}r${round}i${i}`;
         const card = $(`<div class="card board-container"></div>`);
-        card.append(`<div class="board-name"><strong>${g.tags.Board||''}</strong></div>`);
+        card.append(`<div class="board-name"><strong>${g.tags.Board||""}</strong></div>`);
         card.append(`<div id="board${id}" class="chessboard"></div>`);
         card.append(`<div class="game-info">
-                       <b>Белые:</b>${g.tags.White||"?"}<br>
-                       <b>Чёрные:</b>${g.tags.Black||"?"}<br>
-                       <b>Результат:</b>${g.tags.Result||"*"}
+                       <b>Белые:</b> ${g.tags.White||"?"}<br>
+                       <b>Чёрные:</b> ${g.tags.Black||"?"}<br>
+                       <b>Результат:</b> ${g.tags.Result||"*"}
                      </div>`);
         cont.append(card);
-        g.board = Chessboard(`board${id}`, { position:g.chess.fen(), pieceTheme, draggable:false });
-        card.on("click",()=>openModal(g));
+        g.board = Chessboard(`board${id}`, {
+          position: g.chess.fen(),
+          pieceTheme, draggable: false
+        });
+        card.on("click", ()=> openModal(g));
       });
     }
 
     function openModal(game) {
-      modalChess=new Chess();
-      modalMoves=[...game.moves];
-      modalIdx=0;
+      // инициализация шахматной доски
+      modalChess = new Chess();
+      modalMoves = [...game.moves];
+      modalIdx = 0;
       $("#modal").addClass("show");
-      if(!modalBoard) {
-        modalBoard=Chessboard("modalBoard",{ position:"start", pieceTheme, draggable:false, moveSpeed:300 });
+      if (!modalBoard) {
+        modalBoard = Chessboard("modalBoard", {
+          position: "start", pieceTheme, draggable: false, moveSpeed: 300
+        });
       } else {
         modalChess.reset();
         modalBoard.start(false);
         modalBoard.resize();
       }
-      // Нотация
-      const notationDiv=$("#notation").empty()[0];
-      modalMoves.forEach((mv,idx)=>{
-        const lbl=(idx%2===0)?`${Math.floor(idx/2)+1}.`:"";
-        notationDiv.insertAdjacentHTML("beforeend",`<span data-index="${idx}">${lbl}${mv}</span>`);
+
+      // строим нотацию
+      const notationDiv = $("#notation").empty()[0];
+      modalMoves.forEach((mv, idx) => {
+        notationDiv.insertAdjacentHTML("beforeend",
+          `<span class="move" data-index="${idx}">${idx%2===0?Math.floor(idx/2)+1+".":""}${mv}</span>`
+        );
       });
-      // Клик по нотации
-      $("#notation span").off("click").on("click",function(){
+
+      // клики по ходам
+      $("#notation .move").on("click", function(){
         goToMove(+this.dataset.index);
       });
-      // Swipe в нотации
-      notationDiv.addEventListener("touchstart",e=>{
-        if(e.touches.length!==1) return;
-        swipeStartX=e.touches[0].clientX;
-        swipeStartY=e.touches[0].clientY;
-        swipeStartTime=Date.now();
-      },{ passive:true });
-      notationDiv.addEventListener("touchend",e=>{
-        if(swipeStartX===null) return;
-        const dx=e.changedTouches[0].clientX - swipeStartX;
-        const dy=e.changedTouches[0].clientY - swipeStartY;
-        const dt=Date.now()-swipeStartTime;
-        if(Math.abs(dx)>75 && Math.abs(dx)>Math.abs(dy) && dt<500) {
-          if(dx<0) nextMove();    // свайп влево → следующий
-          else prevMove();        // свайп вправо → предыдущий
-          e.preventDefault();
-        }
-        swipeStartX=swipeStartY=swipeStartTime=null;
-      },{ passive:false });
-      // Клавиши и клик по доске
-      document.onkeydown=e=>{
-        if(!$("#modal").hasClass("show")) return;
-        if(e.key==="ArrowRight"||e.key===" ") { e.preventDefault(); nextMove(); }
-        if(e.key==="ArrowLeft") { e.preventDefault(); prevMove(); }
+
+      // стрелки и пробел
+      document.onkeydown = e => {
+        if (!$("#modal").hasClass("show")) return;
+        if (e.key === "ArrowRight" || e.key === " ") { e.preventDefault(); nextMove(); }
+        if (e.key === "ArrowLeft") { e.preventDefault(); prevMove(); }
       };
-      $("#modalBoard").off("click").on("click",nextMove);
+
+      // клики по доске
+      $("#modalBoard").off("click").on("click", nextMove);
+
+      // IntersectionObserver для центра нотации
+      if (observer) observer.disconnect();
+      currentObservedIdx = null;
+      observer = new IntersectionObserver(entries => {
+        entries.forEach(entry => {
+          if (entry.isIntersecting) {
+            const idx = +entry.target.dataset.index;
+            if (idx !== currentObservedIdx) {
+              currentObservedIdx = idx;
+              goToMove(idx);
+            }
+          }
+        });
+      }, {
+        root: notationDiv,
+        rootMargin: '0px -50% 0px -50%',
+        threshold: 0
+      });
+      notationDiv.querySelectorAll(".move")
+                  .forEach(span => observer.observe(span));
+
       highlightMove(-1);
     }
 
-    function closeModal(){
+    function closeModal() {
       $("#modal").removeClass("show");
-      document.onkeydown=null;
+      document.onkeydown = null;
+      if (observer) observer.disconnect();
     }
 
-    function highlightMove(idx){
-      $("#notation span").removeClass("current");
-      if(idx>=0){
-        const el=$(`#notation span[data-index="${idx}"]`);
-        el.addClass("current")[0].scrollIntoView({behavior:"smooth",inline:"center"});
+    function highlightMove(idx) {
+      $("#notation .move").removeClass("active");
+      if (idx >= 0) {
+        const span = $(`#notation .move[data-index="${idx}"]`);
+        span.addClass("active");
+        span[0].scrollIntoView({ behavior: "smooth", inline: "center" });
       }
     }
 
-    function goToMove(idx){
+    function goToMove(idx) {
       modalChess.reset();
       modalBoard.start(false);
-      for(let i=0;i<=idx;i++) modalChess.move(modalMoves[i]);
-      modalBoard.position(modalChess.fen(),true);
-      modalIdx=idx+1;
+      for (let i = 0; i <= idx; i++) modalChess.move(modalMoves[i]);
+      modalBoard.position(modalChess.fen(), true);
+      modalIdx = idx + 1;
       highlightMove(idx);
     }
 
-    function nextMove(){
-      if(modalIdx<modalMoves.length){
+    function nextMove() {
+      if (modalIdx < modalMoves.length) {
         modalChess.move(modalMoves[modalIdx]);
         modalIdx++;
-        modalBoard.position(modalChess.fen(),true);
-        highlightMove(modalIdx-1);
+        modalBoard.position(modalChess.fen(), true);
+        highlightMove(modalIdx - 1);
       }
     }
 
-    function prevMove(){
-      if(modalIdx>0){
+    function prevMove() {
+      if (modalIdx > 0) {
         modalChess.undo();
         modalIdx--;
-        modalBoard.position(modalChess.fen(),true);
-        highlightMove(modalIdx-1);
+        modalBoard.position(modalChess.fen(), true);
+        highlightMove(modalIdx - 1);
       }
     }
 
-    $(async()=>{
-      try{
-        for(let url of PGN_SOURCES){
-          const pgn=await fetchPGN(url);
+    $(async () => {
+      try {
+        for (let url of PGN_SOURCES) {
+          const pgn = await fetchPGN(url);
           tournaments.push(parsePGNtoTournament(pgn));
         }
         renderEventSelector();
         renderRoundSelector();
-      }catch(err){
-        console.error(err);
+      } catch (e) {
+        console.error(e);
         $("#boardsContainer").text("Ошибка загрузки PGN");
       }
       $("#closeModal").click(closeModal);
