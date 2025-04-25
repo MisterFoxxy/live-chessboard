@@ -104,7 +104,6 @@
       color: var(--text-light);
       cursor: pointer;
     }
-    /* Override chessboard width */
     .chessboard { width: 300px; margin: auto; }
     #notation {
       margin-top: 12px;
@@ -242,43 +241,11 @@
         modalBoard = Chessboard("modalBoard",{position:"start",pieceTheme,draggable:false,moveSpeed:300});
       } else {
         modalChess.reset();
-        modalBoard.resize();
         modalBoard.start(false);
+        modalBoard.resize();
       }
       const notationDiv = $("#notation").empty();
       modalMoves.forEach((mv,idx)=>{
-        const lbl = (idx%2===0)?`${Math.floor(idx/2)+1}.` : "";
-        notationDiv.append(`<span data-index="${idx}">${lbl}${mv}</span>`);
-      });
-      $("#notation span").click(function(){ goToMove(+this.dataset.index); });
-      highlightMove(-1);
-    }
-    function closeModal(){ $("#modal").removeClass("show"); }
-    function highlightMove(idx){
-      $("#notation span").removeClass("current");
-      if(idx>=0){
-        const el = $(`#notation span[data-index="${idx}"]`);
-        el.addClass("current");
-        el[0].scrollIntoView({behavior:"smooth",block:"nearest"});
-      }
-    }
-    function goToMove(idx){
-      modalChess.reset(); modalBoard.start(false);
-      for(let i=0;i<=idx;i++) modalChess.move(modalMoves[i]);
-      modalBoard.position(modalChess.fen(),true); modalIdx=idx+1;
-      highlightMove(idx);
-    }
-    function nextMove(){ if(modalIdx<modalMoves.length){ modalChess.move(modalMoves[modalIdx]); modalIdx++; modalBoard.position(modalChess.fen(),true); highlightMove(modalIdx-1);} }
-    function prevMove(){ if(modalIdx>0){ modalChess.undo(); modalIdx--; modalBoard.position(modalChess.fen(),true); highlightMove(modalIdx-1);} }
+        const lbl = (idx%2===0)?`${Math.floor(idx/2)+1}.`:
+````
 
-    $(async()=>{
-      try { for(let url of PGN_SOURCES){ let pgn=await fetchPGN(url); tournaments.push(parsePGNtoTournament(pgn)); }
-        renderEventSelector(); renderRoundSelector();
-      } catch(e){ console.error(e); $("#boardsContainer").text("Ошибка загрузки PGN"); }
-      $("#closeModal").click(closeModal);
-      $("#prevBtn").click(prevMove);
-      $("#nextBtn").click(nextMove);
-    });
-  </script>
-</body>
-</html>
