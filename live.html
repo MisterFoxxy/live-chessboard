@@ -10,7 +10,6 @@
   <style>
     body { margin:0; padding:20px; font-family:sans-serif; text-align:center; }
     #eventTitle { font-size:24px; font-weight:bold; margin-bottom:8px; }
-    #eventInfo { font-size:16px; margin-bottom:12px; }
     #roundSelector { font-size:16px; margin-bottom:16px; padding:6px 12px; }
     .board-container { display:inline-block; margin:10px; vertical-align:top; cursor:pointer; }
     .chessboard { width:300px; }
@@ -28,9 +27,9 @@
       margin-top:12px;
       text-align:left;
       max-height:200px;
-      overflow-y:auto;       /* вертикальный скролл, если очень много строк */
+      overflow-y:auto;
       display:flex;
-      flex-wrap: wrap;       /* перенос ходов на новую строку */
+      flex-wrap: wrap;
       gap:6px;
       font-size:14px;
       padding:8px;
@@ -40,18 +39,15 @@
       cursor:pointer;
       padding:2px 4px;
       border-radius:3px;
-      background: #f0f0f0;
+      background:#f0f0f0;
     }
     #notation span.current {
-      background: #ffff99;
+      background:#ffff99;
     }
   </style>
 </head>
 <body>
   <div id="eventTitle">Загрузка…</div>
-  <div id="eventInfo">
-    CCL. Петровский Путевой Дворец. На разряд: рейтинг до 1550 ФШР, 2009 г.р. и моложе.
-  </div>
 
   <select id="roundSelector"></select>
   <div id="boardsContainer">Загрузка партий…</div>
