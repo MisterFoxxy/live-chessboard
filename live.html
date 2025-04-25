@@ -104,6 +104,8 @@
       color: var(--text-light);
       cursor: pointer;
     }
+    /* Override chessboard width */
+    .chessboard { width: 300px; margin: auto; }
     #notation {
       margin-top: 12px;
       text-align: left;
@@ -143,7 +145,7 @@
   <div id="modal">
     <div class="modal-content">
       <span id="closeModal">&times;</span>
-      <div id="modalBoard" style="margin-bottom:12px;"></div>
+      <div id="modalBoard"></div>
       <div class="controls">
         <button id="prevBtn">Назад</button>
         <button id="nextBtn">Вперед</button>
@@ -163,8 +165,7 @@
     const CORS_PROXY = "https://api.allorigins.win/raw?url=";
     const pieceTheme = "https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png";
 
-    let tournaments = [];
-    let currentIdx = 0;
+    let tournaments = [], currentIdx = 0;
     let modalBoard, modalChess, modalMoves = [], modalIdx = 0;
 
     async function fetchPGN(url) {
@@ -203,9 +204,7 @@
 
     function renderEventSelector() {
       const sel = $("#eventSelector").empty();
-      tournaments.forEach((t, i) => {
-        sel.append(`<option value="${i}">${t.event}</option>`);
-      });
+      tournaments.forEach((t, i) => sel.append(`<option value="${i}">${t.event}</option>`));
       sel.val(currentIdx);
       sel.on("change", () => { currentIdx = +sel.val(); renderRoundSelector(); });
     }
@@ -238,32 +237,39 @@
 
     function openModal(game) {
       modalChess = new Chess(); modalMoves = [...game.moves]; modalIdx = 0;
-      if (!modalBoard) modalBoard = Chessboard("modalBoard",{position:"start",pieceTheme,draggable:false,moveSpeed:300});
-      else { modalChess.reset(); modalBoard.start(false); }
+      $("#modal").addClass("show");
+      if (!modalBoard) {
+        modalBoard = Chessboard("modalBoard",{position:"start",pieceTheme,draggable:false,moveSpeed:300});
+      } else {
+        modalChess.reset();
+        modalBoard.resize();
+        modalBoard.start(false);
+      }
       const notationDiv = $("#notation").empty();
       modalMoves.forEach((mv,idx)=>{
         const lbl = (idx%2===0)?`${Math.floor(idx/2)+1}.` : "";
         notationDiv.append(`<span data-index="${idx}">${lbl}${mv}</span>`);
       });
       $("#notation span").click(function(){ goToMove(+this.dataset.index); });
-      $("#modal").addClass("show"); highlightMove(-1);
+      highlightMove(-1);
     }
     function closeModal(){ $("#modal").removeClass("show"); }
-
     function highlightMove(idx){
       $("#notation span").removeClass("current");
-      if(idx>=0){ const el=$(`#notation span[data-index="${idx}"]`);
-        el.addClass("current"); el[0].scrollIntoView({behavior:"smooth",block:"nearest"}); }
+      if(idx>=0){
+        const el = $(`#notation span[data-index="${idx}"]`);
+        el.addClass("current");
+        el[0].scrollIntoView({behavior:"smooth",block:"nearest"});
+      }
     }
-
-    function goToMove(idx){ modalChess.reset(); modalBoard.start(false);
+    function goToMove(idx){
+      modalChess.reset(); modalBoard.start(false);
       for(let i=0;i<=idx;i++) modalChess.move(modalMoves[i]);
-      modalBoard.position(modalChess.fen(),true); modalIdx=idx+1; highlightMove(idx);
+      modalBoard.position(modalChess.fen(),true); modalIdx=idx+1;
+      highlightMove(idx);
     }
-    function nextMove(){ if(modalIdx<modalMoves.length){ modalChess.move(modalMoves[modalIdx]); modalIdx++;
-      modalBoard.position(modalChess.fen(),true); highlightMove(modalIdx-1);} }
-    function prevMove(){ if(modalIdx>0){ modalChess.undo(); modalIdx--;
-      modalBoard.position(modalChess.fen(),true); highlightMove(modalIdx-1);} }
+    function nextMove(){ if(modalIdx<modalMoves.length){ modalChess.move(modalMoves[modalIdx]); modalIdx++; modalBoard.position(modalChess.fen(),true); highlightMove(modalIdx-1);} }
+    function prevMove(){ if(modalIdx>0){ modalChess.undo(); modalIdx--; modalBoard.position(modalChess.fen(),true); highlightMove(modalIdx-1);} }
 
     $(async()=>{
       try { for(let url of PGN_SOURCES){ let pgn=await fetchPGN(url); tournaments.push(parsePGNtoTournament(pgn)); }
