@@ -7,45 +7,143 @@
   <link rel="stylesheet"
         href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css"
         crossorigin="anonymous"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet"/>
   <style>
-    body { margin:0; padding:20px; font-family:sans-serif; text-align:center; }
-    select { font-size:16px; margin:0 8px 16px; padding:6px 12px; }
-    #eventTitle { font-size:24px; font-weight:bold; margin-bottom:8px; }
-    .board-container { display:inline-block; margin:10px; vertical-align:top; cursor:pointer; }
-    .chessboard { width:300px; }
-    .game-info { text-align:left; font-size:14px; margin-top:6px; }
-    .game-info b { width:70px; display:inline-block; }
-    #modal { display:none; position:fixed; top:0; left:0; width:100%; height:100%;
-             background:rgba(0,0,0,0.7); align-items:center; justify-content:center; }
-    .modal-content { position:relative; background:#fff; padding:20px; width:380px;
-                     border-radius:5px; text-align:center; z-index:1000; }
-    #closeModal { position:absolute; top:10px; right:15px; font-size:24px; cursor:pointer; }
-    #modalBoard { width:300px; margin:auto; }
-    .controls { margin-top:12px; }
-    .controls button { padding:6px 12px; margin:0 8px; font-size:16px; }
+    :root {
+      --bg-page: #f4f5f7;
+      --card-bg: #ffffff;
+      --accent: #4a90e2;
+      --text-main: #333333;
+      --text-light: #666666;
+      --radius: 8px;
+      --transition: 0.2s;
+    }
+    body {
+      margin: 0;
+      padding: 20px;
+      background: var(--bg-page);
+      color: var(--text-main);
+      font-family: 'Inter', sans-serif;
+    }
+    header {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 24px;
+    }
+    select {
+      appearance: none;
+      background: var(--card-bg) url("data:image/svg+xml;charset=UTF-8,<svg fill='%23666' height='24' viewBox='0 0 24 24' width='24' xmlns='http://www.w3.org/2000/svg'><path d='M7 10l5 5 5-5z'/></svg>") no-repeat right 12px center;
+      padding: 8px 32px 8px 12px;
+      border: 1px solid #ccc;
+      border-radius: var(--radius);
+      font-size: 16px;
+      color: var(--text-main);
+      transition: border-color var(--transition);
+    }
+    select:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    #boardsContainer {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 20px;
+    }
+    .card {
+      background: var(--card-bg);
+      border-radius: var(--radius);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+      overflow: hidden;
+      transition: transform var(--transition), box-shadow var(--transition);
+      cursor: pointer;
+    }
+    .card:hover {
+      transform: scale(1.02);
+      box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+    }
+    .card .game-info {
+      padding: 12px;
+      font-size: 14px;
+      text-align: left;
+      color: var(--text-light);
+    }
+    #modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0,0,0,0.5);
+      backdrop-filter: blur(4px);
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transition: opacity var(--transition);
+    }
+    #modal.show {
+      display: flex;
+      opacity: 1;
+    }
+    .modal-content {
+      background: var(--card-bg);
+      border-radius: var(--radius);
+      padding: 20px;
+      position: relative;
+      width: 400px;
+      max-width: 90%;
+      text-align: center;
+    }
+    #closeModal {
+      position: absolute;
+      top: 12px;
+      right: 16px;
+      font-size: 24px;
+      color: var(--text-light);
+      cursor: pointer;
+    }
     #notation {
-      margin-top:12px; text-align:left; max-height:200px; overflow-y:auto;
-      display:flex; flex-wrap: wrap; gap:6px; font-size:14px; padding:8px;
-      border-top:1px solid #ccc;
+      margin-top: 12px;
+      text-align: left;
+      max-height: 200px;
+      overflow-y: auto;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      font-size: 14px;
+      padding: 8px;
+      border-top: 1px solid #ccc;
     }
     #notation span {
-      cursor:pointer; padding:2px 4px; border-radius:3px; background:#f0f0f0;
+      cursor: pointer;
+      padding: 4px 6px;
+      border-radius: 4px;
+      background: var(--bg-page);
+      transition: background var(--transition), color var(--transition);
     }
-    #notation span.current { background:#ffff99; }
+    #notation span:hover,
+    #notation span.current {
+      background: var(--accent);
+      color: #fff;
+    }
   </style>
 </head>
 <body>
-  <div>
+  <header>
     <select id="eventSelector"></select>
     <select id="roundSelector"></select>
-  </div>
-  <div id="boardsContainer">Загрузка партий…</div>
+  </header>
 
-  <!-- Модалка -->
+  <div id="boardsContainer">
+    <p>Загрузка партий…</p>
+  </div>
+
   <div id="modal">
     <div class="modal-content">
       <span id="closeModal">&times;</span>
-      <div id="modalBoard"></div>
+      <div id="modalBoard" style="margin-bottom:12px;"></div>
       <div class="controls">
         <button id="prevBtn">Назад</button>
         <button id="nextBtn">Вперед</button>
@@ -54,22 +152,19 @@
     </div>
   </div>
 
-  <script src="https://code.jquery.com/jquery-3.5.1.min.js"
-          crossorigin="anonymous"></script>
-  <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"
-          crossorigin="anonymous"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js"
-          crossorigin="anonymous"></script>
+  <script src="https://code.jquery.com/jquery-3.5.1.min.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js" crossorigin="anonymous"></script>
   <script>
     const PGN_SOURCES = [
       "https://live.idchess.com/download/shared/pgn/gs-eJ8OrndCwXa9d7thEJl1DyD2DNu7IxZBAlKBDIdkh315Ibjc6u_5jGnbAsw3Z?type=tournament",
       "https://live.idchess.com/download/shared/pgn/gs-eJ8OrndCwXa9d7eJEJl1DyD2DNu7IxZBAlKBDIdkh314Cbjc6u_5jGnbAsw3Z?type=tournament"
     ];
-    const CORS_PROXY  = "https://api.allorigins.win/raw?url=";
-    const pieceTheme  = "https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png";
+    const CORS_PROXY = "https://api.allorigins.win/raw?url=";
+    const pieceTheme = "https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png";
 
-    let tournaments = [];       // { event, gamesByRound }
-    let currentIdx  = 0;
+    let tournaments = [];
+    let currentIdx = 0;
     let modalBoard, modalChess, modalMoves = [], modalIdx = 0;
 
     async function fetchPGN(url) {
@@ -78,11 +173,9 @@
     }
 
     function parsePGNtoTournament(pgn) {
-      // разбить на блоки любой тег
       const blocks = pgn.trim().split(/\r?\n\s*\r?\n(?=\[)/);
       let gamesByRound = {};
       let eventName = "";
-
       blocks.forEach(block => {
         const [tagsBlk, movesBlk] = block.split(/\r?\n\r?\n/);
         if (!movesBlk) return;
@@ -93,7 +186,6 @@
         });
         if (!eventName && tags.Event) eventName = tags.Event;
         const round = tags.Round || "?";
-        // чистка ходов
         let clean = movesBlk
           .replace(/\{[^}]*\}/g, "")
           .replace(/\([^)]*\)/g, "")
@@ -106,7 +198,6 @@
         if (!gamesByRound[round]) gamesByRound[round] = [];
         gamesByRound[round].push({ tags, moves: arr, chess });
       });
-
       return { event: eventName, gamesByRound };
     }
 
@@ -116,10 +207,7 @@
         sel.append(`<option value="${i}">${t.event}</option>`);
       });
       sel.val(currentIdx);
-      sel.on("change", () => {
-        currentIdx = +sel.val();
-        renderRoundSelector();
-      });
+      sel.on("change", () => { currentIdx = +sel.val(); renderRoundSelector(); });
     }
 
     function renderRoundSelector() {
@@ -128,8 +216,7 @@
                            .sort((a,b)=>Number(a)-Number(b));
       const sel = $("#roundSelector").empty();
       rounds.forEach(r => sel.append(`<option value="${r}">Тур ${r}</option>`));
-      let last = rounds[rounds.length-1];
-      sel.val(last);
+      let last = rounds[rounds.length-1]; sel.val(last);
       sel.on("change", ()=> renderBoards(sel.val()));
       renderBoards(last);
     }
@@ -139,95 +226,49 @@
       const cont = $("#boardsContainer").empty();
       list.forEach((g,i) => {
         const id = `t${currentIdx}r${round}i${i}`;
-        const html = $(`
-          <div class="board-container">
-            <div id="board${id}" class="chessboard"></div>
-            <div class="game-info">
-              <b>Белые:</b> ${g.tags.White||"?"}<br>
-              <b>Чёрные:</b> ${g.tags.Black||"?"}<br>
-              <b>Результат:</b> ${g.tags.Result||"*"}
-            </div>
-          </div>`);
-        cont.append(html);
-        g.board = Chessboard(`board${id}`, {
-          position: g.chess.fen(),
-          pieceTheme, draggable:false
-        });
-        html.click(()=>openModal(g));
+        const card = $(`<div class="card board-container"></div>`);
+        card.append(`<div id="board${id}" class="chessboard"></div>`);
+        card.append(`<div class="game-info"><b>Белые:</b> ${g.tags.White||"?"}<br><b>Чёрные:</b> ${g.tags.Black||"?"}<br><b>Результат:</b> ${g.tags.Result||"*"}</div>`);
+        cont.append(card);
+        g.board = Chessboard(`board${id}`, { position: g.chess.fen(), pieceTheme, draggable:false });
+        card.click(()=>openModal(g));
       });
       $("#eventTitle").text(tournaments[currentIdx].event);
     }
 
     function openModal(game) {
-      modalChess = new Chess();
-      modalMoves = [...game.moves];
-      modalIdx   = 0;
-      if (!modalBoard) {
-        modalBoard = Chessboard("modalBoard", {
-          position:"start", pieceTheme, draggable:false, moveSpeed:300
-        });
-      } else {
-        modalChess.reset();
-        modalBoard.start(false);
-      }
+      modalChess = new Chess(); modalMoves = [...game.moves]; modalIdx = 0;
+      if (!modalBoard) modalBoard = Chessboard("modalBoard",{position:"start",pieceTheme,draggable:false,moveSpeed:300});
+      else { modalChess.reset(); modalBoard.start(false); }
       const notationDiv = $("#notation").empty();
-      modalMoves.forEach((mv, idx)=>{
-        const lbl = (idx%2===0)?`${Math.floor(idx/2)+1}.`:"";
+      modalMoves.forEach((mv,idx)=>{
+        const lbl = (idx%2===0)?`${Math.floor(idx/2)+1}.` : "";
         notationDiv.append(`<span data-index="${idx}">${lbl}${mv}</span>`);
       });
-      $("#notation span").click(function(){
-        goToMove(+this.dataset.index);
-      });
-      $("#modal").fadeIn(150);
-      highlightMove(-1);
+      $("#notation span").click(function(){ goToMove(+this.dataset.index); });
+      $("#modal").addClass("show"); highlightMove(-1);
     }
+    function closeModal(){ $("#modal").removeClass("show"); }
 
-    function closeModal(){ $("#modal").fadeOut(150); }
     function highlightMove(idx){
       $("#notation span").removeClass("current");
-      if(idx>=0){
-        const el = $(`#notation span[data-index="${idx}"]`);
-        el.addClass("current")[0].scrollIntoView({behavior:"smooth",block:"nearest"});
-      }
-    }
-    function goToMove(idx){
-      modalChess.reset();
-      modalBoard.start(false);
-      for(let i=0;i<=idx;i++) modalChess.move(modalMoves[i]);
-      modalBoard.position(modalChess.fen(),true);
-      modalIdx = idx+1;
-      highlightMove(idx);
-    }
-    function nextMove(){
-      if(modalIdx<modalMoves.length){
-        modalChess.move(modalMoves[modalIdx]);
-        modalIdx++;
-        modalBoard.position(modalChess.fen(),true);
-        highlightMove(modalIdx-1);
-      }
-    }
-    function prevMove(){
-      if(modalIdx>0){
-        modalChess.undo();
-        modalIdx--;
-        modalBoard.position(modalChess.fen(),true);
-        highlightMove(modalIdx-1);
-      }
+      if(idx>=0){ const el=$(`#notation span[data-index="${idx}"]`);
+        el.addClass("current"); el[0].scrollIntoView({behavior:"smooth",block:"nearest"}); }
     }
 
+    function goToMove(idx){ modalChess.reset(); modalBoard.start(false);
+      for(let i=0;i<=idx;i++) modalChess.move(modalMoves[i]);
+      modalBoard.position(modalChess.fen(),true); modalIdx=idx+1; highlightMove(idx);
+    }
+    function nextMove(){ if(modalIdx<modalMoves.length){ modalChess.move(modalMoves[modalIdx]); modalIdx++;
+      modalBoard.position(modalChess.fen(),true); highlightMove(modalIdx-1);} }
+    function prevMove(){ if(modalIdx>0){ modalChess.undo(); modalIdx--;
+      modalBoard.position(modalChess.fen(),true); highlightMove(modalIdx-1);} }
+
     $(async()=>{
-      try {
-        // загрузка обоих PGN
-        for(let url of PGN_SOURCES){
-          let pgn = await fetchPGN(url);
-          tournaments.push(parsePGNtoTournament(pgn));
-        }
-        renderEventSelector();
-        renderRoundSelector();
-      } catch(e){
-        console.error(e);
-        $("#boardsContainer").text("Ошибка загрузки PGN");
-      }
+      try { for(let url of PGN_SOURCES){ let pgn=await fetchPGN(url); tournaments.push(parsePGNtoTournament(pgn)); }
+        renderEventSelector(); renderRoundSelector();
+      } catch(e){ console.error(e); $("#boardsContainer").text("Ошибка загрузки PGN"); }
       $("#closeModal").click(closeModal);
       $("#prevBtn").click(prevMove);
       $("#nextBtn").click(nextMove);
