@@ -3,8 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Live Chess Multi-Tournament Viewer</title>
-  <link rel="stylesheet"
+  <title>Live 2Chess Multi-Tournament Viewer</n  ><link rel="stylesheet"
         href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css"
         crossorigin="anonymous"/>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet"/>
@@ -27,10 +26,11 @@
     }
     header {
       display: flex;
+      flex-wrap: wrap;
       justify-content: center;
       align-items: center;
       gap: 1rem;
-      margin-bottom: 24px;
+      margin-bottom: 16px;
     }
     select {
       appearance: none;
@@ -41,6 +41,8 @@
       font-size: 16px;
       color: var(--text-main);
       transition: border-color var(--transition);
+      max-width: 300px;
+      width: 100%;
     }
     select:focus {
       outline: none;
@@ -78,6 +80,8 @@
       align-items: center; justify-content: center;
       opacity: 0;
       transition: opacity var(--transition);
+      padding: 10px;
+      box-sizing: border-box;
     }
     #modal.show {
       display: flex;
@@ -86,18 +90,18 @@
     .modal-content {
       background: var(--card-bg);
       border-radius: var(--radius);
-      padding: 20px;
+      padding: 16px;
       position: relative;
-      width: 90vw;
-      max-width: 400px;
-      max-height: 90vh;
-      overflow-y: auto;
-      text-align: center;
+      width: 100%;
+      max-width: 360px;
+      max-height: 100%;
+      overflow: hidden;
+      box-sizing: border-box;
     }
     #closeModal {
       position: absolute;
       top: 8px; right: 8px;
-      font-size: 28px;
+      font-size: 24px;
       color: var(--text-light);
       background: rgba(255,255,255,0.8);
       border-radius: 50%;
@@ -113,9 +117,9 @@
     }
     #notation {
       margin-top: 12px; text-align: left;
-      max-height: 200px; overflow-y: auto;
+      max-height: 150px; overflow-y: auto;
       display: flex; flex-wrap: wrap; gap: 6px;
-      font-size: 14px; padding: 8px;
+      font-size: 14px; padding: 6px;
       border-top: 1px solid #ccc;
     }
     #notation span {
@@ -127,6 +131,12 @@
     #notation span.current {
       background: var(--accent);
       color: #fff;
+    }
+    /* Mobile: stack boards vertically */
+    @media (max-width: 480px) {
+      #boardsContainer {
+        grid-template-columns: 1fr;
+      }
     }
   </style>
 </head>
@@ -166,7 +176,6 @@
     let tournaments = [], currentIdx = 0;
     let modalBoard, modalChess, modalMoves = [], modalIdx = 0;
     let touchStartX = null;
-    let touchStartY = null;
 
     async function fetchPGN(url) {
       const res = await fetch(CORS_PROXY + encodeURIComponent(url), { cache: 'no-store' });
@@ -238,7 +247,7 @@
       modalChess = new Chess(); modalMoves = [...game.moves]; modalIdx = 0;
       $("#modal").addClass("show");
       if (!modalBoard) {
-        modalBoard = Chessboard("modalBoard", { position:"start", pieceTheme, draggable:false, moveSpeed:300 });
+        modalBoard = Chessboard("modalBoard", { position: "start", pieceTheme, draggable: false, moveSpeed: 300 });
       } else {
         modalChess.reset(); modalBoard.start(false); modalBoard.resize();
       }
@@ -248,62 +257,26 @@
         notationDiv.append(`<span data-index="${idx}">${lbl}${mv}</span>`);
       });
       $("#notation span").click(function(){ goToMove(+this.dataset.index); });
-      // клавиатура
       document.onkeydown = e => {
         if (!$("#modal").hasClass("show")) return;
         if (e.key === "ArrowRight" || e.key === " ") { e.preventDefault(); nextMove(); }
         if (e.key === "ArrowLeft") { e.preventDefault(); prevMove(); }
       };
-      // клик по доске
       $("#modalBoard").off("click").on("click", nextMove);
-      // свайп по доске
       const mb = document.getElementById("modalBoard");
-      mb.ontouchstart = e => { touchStartX = e.changedTouches[0].clientX; touchStartY = e.changedTouches[0].clientY; };
-      mb.ontouchend = e => {
-        let dx = e.changedTouches[0].clientX - touchStartX;
-        let dy = e.changedTouches[0].clientY - touchStartY;
-        if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 30) {
-          if (dx > 0) prevMove(); else nextMove();
-        }
-      };
-      // свайп по нотации
-      const nt = document.getElementById("notation");
-      nt.ontouchstart = e => { touchStartX = e.changedTouches[0].clientX; };
-      nt.ontouchend = e => {
-        let dx = e.changedTouches[0].clientX - touchStartX;
-        if (Math.abs(dx) > 30) {
-          if (dx > 0) prevMove(); else nextMove();
-        }
-      };
+      mb.ontouchstart = e => { touchStartX = e.changedTouches[0].clientX; };
+      mb.ontouchend = e => { let dx = e.changedTouches[0].clientX - touchStartX; if (dx>30) prevMove(); else if (dx<-30) nextMove(); };
       highlightMove(-1);
     }
-    function closeModal() { $("#modal").removeClass("show"); document.onkeydown = null; }
-    function highlightMove(idx) {
-      $("#notation span").removeClass("current");
-      if (idx >= 0) {
-        const el = $(`#notation span[data-index="${idx}"]`);
-        el.addClass("current"); el[0].scrollIntoView({behavior:"smooth",block:"nearest"});
-      }
-    }
-    function goToMove(idx) {
-      modalChess.reset(); modalBoard.start(false);
-      for (let i = 0; i <= idx; i++) modalChess.move(modalMoves[i]);
-      modalBoard.position(modalChess.fen(), true); modalIdx = idx+1; highlightMove(idx);
-    }
-    function nextMove() { if (modalIdx < modalMoves.length) { modalChess.move(modalMoves[modalIdx]); modalIdx++; modalBoard.position(modalChess.fen(), true); highlightMove(modalIdx-1); } }
-    function prevMove() { if (modalIdx > 0) { modalChess.undo(); modalIdx--; modalBoard.position(modalChess.fen(), true); highlightMove(modalIdx-1); } }
+    function closeModal(){ $("#modal").removeClass("show"); document.onkeydown=null; }
+    function highlightMove(idx){ $("#notation span").removeClass("current"); if(idx>=0){ const el=$(`#notation span[data-index="${idx}"]`); el.addClass("current"); el[0].scrollIntoView({behavior:"smooth",block:"nearest"}); } }
+    function goToMove(idx){ modalChess.reset(); modalBoard.start(false); for(let i=0;i<=idx;i++) modalChess.move(modalMoves[i]); modalBoard.position(modalChess.fen(),true); modalIdx=idx+1; highlightMove(idx); }
+    function nextMove(){ if(modalIdx<modalMoves.length){ modalChess.move(modalMoves[modalIdx]); modalIdx++; modalBoard.position(modalChess.fen(),true); highlightMove(modalIdx-1);} }
+    function prevMove(){ if(modalIdx>0){ modalChess.undo(); modalIdx--; modalBoard.position(modalChess.fen(),true); highlightMove(modalIdx-1);} }
 
-    $(async () => {
-      try {
-        for (let url of PGN_SOURCES) {
-          let pgn = await fetchPGN(url);
-          tournaments.push(parsePGNtoTournament(pgn));
-        }
-        renderEventSelector(); renderRoundSelector();
-      } catch (e) {
-        console.error(e);
-        $("#boardsContainer").text("Ошибка загрузки PGN");
-      }
+    $(async()=>{
+      try{ for(let url of PGN_SOURCES){ let pgn=await fetchPGN(url); tournaments.push(parsePGNtoTournament(pgn)); } renderEventSelector(); renderRoundSelector(); }
+      catch(e){ console.error(e); $("#boardsContainer").text("Ошибка загрузки PGN"); }
       $("#closeModal").click(closeModal);
       $("#prevBtn").click(prevMove);
       $("#nextBtn").click(nextMove);
