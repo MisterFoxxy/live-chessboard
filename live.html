@@ -93,6 +93,7 @@
       display: flex;
       opacity: 1;
     }
+    /* Крестик всегда сверху */
     #closeModal {
       position: fixed;
       top: 16px; right: 16px;
@@ -102,7 +103,7 @@
       cursor: pointer;
       z-index: 1002;
     }
-    .modal-content {
+    #modalContent {
       background: var(--card-bg);
       border-radius: var(--radius);
       padding: 20px;
@@ -149,6 +150,7 @@
       background: var(--accent);
       color: #fff;
     }
+
     @media (max-width: 480px) {
       header {
         flex-direction: column;
@@ -169,13 +171,11 @@
     <select id="roundSelector"></select>
   </header>
 
-  <div id="boardsContainer">
-    <p>Загрузка партий…</p>
-  </div>
+  <div id="boardsContainer"><p>Загрузка партий…</p></div>
 
   <div id="modal">
     <span id="closeModal">&times;</span>
-    <div class="modal-content">
+    <div id="modalContent">
       <div id="modalBoard"></div>
       <div class="controls">
         <button id="prevBtn">← Назад</button>
@@ -301,12 +301,12 @@
         if (e.key==="ArrowRight"||e.key===" ") {e.preventDefault(); nextMove();}
         if (e.key==="ArrowLeft") {e.preventDefault(); prevMove();}
       };
-      const mb = document.getElementById("modalBoard");
-      mb.ontouchstart = e => { touchStartX = e.changedTouches[0].clientX; };
-      mb.ontouchend = e => {
+      const swipeArea = document.getElementById("modalContent");
+      swipeArea.ontouchstart = e => { touchStartX = e.changedTouches[0].clientX; };
+      swipeArea.ontouchend = e => {
         let dx = e.changedTouches[0].clientX - touchStartX;
-        if (dx>50) prevMove();
-        else if (dx< -50) nextMove();
+        if (dx < -50) nextMove();    // правое слайд -> вперед
+        else if (dx > 50) prevMove(); // левое слайд -> назад
       };
       $("#modalBoard").off("click").on("click", nextMove);
       highlightMove(-1);
