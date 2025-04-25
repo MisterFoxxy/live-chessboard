@@ -1,57 +1,47 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Live Chess Viewer</title>
+  <title>Live Chess Multi-Tournament Viewer</title>
   <link rel="stylesheet"
         href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css"
         crossorigin="anonymous"/>
   <style>
     body { margin:0; padding:20px; font-family:sans-serif; text-align:center; }
+    select { font-size:16px; margin:0 8px 16px; padding:6px 12px; }
     #eventTitle { font-size:24px; font-weight:bold; margin-bottom:8px; }
-    #roundSelector { font-size:16px; margin-bottom:16px; padding:6px 12px; }
     .board-container { display:inline-block; margin:10px; vertical-align:top; cursor:pointer; }
     .chessboard { width:300px; }
     .game-info { text-align:left; font-size:14px; margin-top:6px; }
     .game-info b { width:70px; display:inline-block; }
     #modal { display:none; position:fixed; top:0; left:0; width:100%; height:100%;
              background:rgba(0,0,0,0.7); align-items:center; justify-content:center; }
-    .modal-content { position:relative; background:#f9f9f9; padding:20px; width:380px;
+    .modal-content { position:relative; background:#fff; padding:20px; width:380px;
                      border-radius:5px; text-align:center; z-index:1000; }
-    #closeModal { position:absolute; top:10px; right:15px; font-size:24px; cursor:pointer; z-index:1001; }
+    #closeModal { position:absolute; top:10px; right:15px; font-size:24px; cursor:pointer; }
     #modalBoard { width:300px; margin:auto; }
     .controls { margin-top:12px; }
     .controls button { padding:6px 12px; margin:0 8px; font-size:16px; }
     #notation {
-      margin-top:12px;
-      text-align:left;
-      max-height:200px;
-      overflow-y:auto;
-      display:flex;
-      flex-wrap: wrap;
-      gap:6px;
-      font-size:14px;
-      padding:8px;
+      margin-top:12px; text-align:left; max-height:200px; overflow-y:auto;
+      display:flex; flex-wrap: wrap; gap:6px; font-size:14px; padding:8px;
       border-top:1px solid #ccc;
     }
     #notation span {
-      cursor:pointer;
-      padding:2px 4px;
-      border-radius:3px;
-      background:#f0f0f0;
+      cursor:pointer; padding:2px 4px; border-radius:3px; background:#f0f0f0;
     }
-    #notation span.current {
-      background:#ffff99;
-    }
+    #notation span.current { background:#ffff99; }
   </style>
 </head>
 <body>
-  <div id="eventTitle">Загрузка…</div>
-
-  <select id="roundSelector"></select>
+  <div>
+    <select id="eventSelector"></select>
+    <select id="roundSelector"></select>
+  </div>
   <div id="boardsContainer">Загрузка партий…</div>
 
+  <!-- Модалка -->
   <div id="modal">
     <div class="modal-content">
       <span id="closeModal">&times;</span>
@@ -71,59 +61,84 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js"
           crossorigin="anonymous"></script>
   <script>
-    const PGN_URL    = "https://live.idchess.com/download/shared/pgn/gs-eJ8OrndCwXa9d7thEJl1DyD2DNu7IxZBAlKBDIdkh315Ibjc6u_5jGnbAsw3Z?type=tournament";
-    const CORS_PROXY = "https://api.allorigins.win/raw?url=";
-    const pieceTheme = "https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png";
+    const PGN_SOURCES = [
+      "https://live.idchess.com/download/shared/pgn/gs-eJ8OrndCwXa9d7thEJl1DyD2DNu7IxZBAlKBDIdkh315Ibjc6u_5jGnbAsw3Z?type=tournament",
+      "https://live.idchess.com/download/shared/pgn/gs-eJ8OrndCwXa9d7eJEJl1DyD2DNu7IxZBAlKBDIdkh314Cbjc6u_5jGnbAsw3Z?type=tournament"
+    ];
+    const CORS_PROXY  = "https://api.allorigins.win/raw?url=";
+    const pieceTheme  = "https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png";
 
-    let allGamesByRound = {}, modalBoard, modalChess, modalMoves = [], modalIdx = 0;
+    let tournaments = [];       // { event, gamesByRound }
+    let currentIdx  = 0;
+    let modalBoard, modalChess, modalMoves = [], modalIdx = 0;
 
-    async function fetchPGN() {
-      const res = await fetch(CORS_PROXY + encodeURIComponent(PGN_URL), { cache: 'no-store' });
+    async function fetchPGN(url) {
+      const res = await fetch(CORS_PROXY + encodeURIComponent(url), { cache: 'no-store' });
       return await res.text();
     }
 
-    function parsePGN(pgn) {
-      allGamesByRound = {};
+    function parsePGNtoTournament(pgn) {
+      // разбить на блоки любой тег
       const blocks = pgn.trim().split(/\r?\n\s*\r?\n(?=\[)/);
+      let gamesByRound = {};
+      let eventName = "";
+
       blocks.forEach(block => {
         const [tagsBlk, movesBlk] = block.split(/\r?\n\r?\n/);
         if (!movesBlk) return;
-        const tags = {};
+        let tags = {};
         tagsBlk.split(/\r?\n/).forEach(line => {
-          const m = line.match(/^\[([\w]+)\s+"(.+)"\]$/);
+          let m = line.match(/^\[([\w]+)\s+"(.+)"\]$/);
           if (m) tags[m[1]] = m[2];
         });
+        if (!eventName && tags.Event) eventName = tags.Event;
         const round = tags.Round || "?";
-        const clean = movesBlk
+        // чистка ходов
+        let clean = movesBlk
           .replace(/\{[^}]*\}/g, "")
           .replace(/\([^)]*\)/g, "")
           .replace(/\d+\.{1,3}/g, "")
           .replace(/1-0|0-1|1\/2-1\/2|\*/g, "")
           .trim();
-        const arr   = clean ? clean.split(/\s+/) : [];
-        const chess = new Chess();
-        arr.forEach(m => chess.move(m));
-        if (!allGamesByRound[round]) allGamesByRound[round] = [];
-        allGamesByRound[round].push({ tags, moves: arr, chess });
+        let arr = clean ? clean.split(/\s+/) : [];
+        let chess = new Chess();
+        arr.forEach(mv => chess.move(mv));
+        if (!gamesByRound[round]) gamesByRound[round] = [];
+        gamesByRound[round].push({ tags, moves: arr, chess });
+      });
+
+      return { event: eventName, gamesByRound };
+    }
+
+    function renderEventSelector() {
+      const sel = $("#eventSelector").empty();
+      tournaments.forEach((t, i) => {
+        sel.append(`<option value="${i}">${t.event}</option>`);
+      });
+      sel.val(currentIdx);
+      sel.on("change", () => {
+        currentIdx = +sel.val();
+        renderRoundSelector();
       });
     }
 
     function renderRoundSelector() {
-      const sel    = $("#roundSelector").empty();
-      const rounds = Object.keys(allGamesByRound)
+      const rounds = Object.keys(tournaments[currentIdx].gamesByRound)
                            .filter(r => r !== "?")
-                           .sort((a,b) => Number(a) - Number(b));
+                           .sort((a,b)=>Number(a)-Number(b));
+      const sel = $("#roundSelector").empty();
       rounds.forEach(r => sel.append(`<option value="${r}">Тур ${r}</option>`));
-      const last = rounds[rounds.length - 1];
+      let last = rounds[rounds.length-1];
       sel.val(last);
-      sel.on("change", () => renderBoards(sel.val()));
+      sel.on("change", ()=> renderBoards(sel.val()));
       renderBoards(last);
     }
 
     function renderBoards(round) {
+      const list = tournaments[currentIdx].gamesByRound[round] || [];
       const cont = $("#boardsContainer").empty();
-      (allGamesByRound[round]||[]).forEach((g,i) => {
-        const id = `r${round}-${i}`;
+      list.forEach((g,i) => {
+        const id = `t${currentIdx}r${round}i${i}`;
         const html = $(`
           <div class="board-container">
             <div id="board${id}" class="chessboard"></div>
@@ -132,17 +147,15 @@
               <b>Чёрные:</b> ${g.tags.Black||"?"}<br>
               <b>Результат:</b> ${g.tags.Result||"*"}
             </div>
-          </div>
-        `);
+          </div>`);
         cont.append(html);
         g.board = Chessboard(`board${id}`, {
           position: g.chess.fen(),
-          pieceTheme,
-          draggable: false
+          pieceTheme, draggable:false
         });
-        html.click(() => openModal(g));
+        html.click(()=>openModal(g));
       });
-      $("#eventTitle").text((allGamesByRound[round]||[])[0]?.tags.Event || "Шахматный турнир");
+      $("#eventTitle").text(tournaments[currentIdx].event);
     }
 
     function openModal(game) {
@@ -151,74 +164,67 @@
       modalIdx   = 0;
       if (!modalBoard) {
         modalBoard = Chessboard("modalBoard", {
-          position: "start",
-          pieceTheme,
-          draggable: false,
-          moveSpeed: 300
+          position:"start", pieceTheme, draggable:false, moveSpeed:300
         });
       } else {
         modalChess.reset();
         modalBoard.start(false);
       }
-
       const notationDiv = $("#notation").empty();
-      modalMoves.forEach((move, idx) => {
-        const label = (idx % 2 === 0) ? `${Math.floor(idx/2)+1}.` : "";
-        notationDiv.append(`<span data-index="${idx}">${label}${move}</span>`);
+      modalMoves.forEach((mv, idx)=>{
+        const lbl = (idx%2===0)?`${Math.floor(idx/2)+1}.`:"";
+        notationDiv.append(`<span data-index="${idx}">${lbl}${mv}</span>`);
       });
-
-      $("#notation span").click(function() {
-        const idx = +this.getAttribute("data-index");
-        goToMove(idx);
+      $("#notation span").click(function(){
+        goToMove(+this.dataset.index);
       });
-
       $("#modal").fadeIn(150);
       highlightMove(-1);
     }
 
-    function closeModal() { $("#modal").fadeOut(150); }
-
-    function highlightMove(idx) {
+    function closeModal(){ $("#modal").fadeOut(150); }
+    function highlightMove(idx){
       $("#notation span").removeClass("current");
-      if (idx >= 0) {
+      if(idx>=0){
         const el = $(`#notation span[data-index="${idx}"]`);
-        el.addClass("current");
-        el[0].scrollIntoView({ behavior: "smooth", block: "nearest" });
+        el.addClass("current")[0].scrollIntoView({behavior:"smooth",block:"nearest"});
       }
     }
-
-    function goToMove(idx) {
+    function goToMove(idx){
       modalChess.reset();
       modalBoard.start(false);
-      for (let i = 0; i <= idx; i++) modalChess.move(modalMoves[i]);
-      modalBoard.position(modalChess.fen(), true);
-      modalIdx = idx + 1;
+      for(let i=0;i<=idx;i++) modalChess.move(modalMoves[i]);
+      modalBoard.position(modalChess.fen(),true);
+      modalIdx = idx+1;
       highlightMove(idx);
     }
-
-    function nextMove() {
-      if (modalIdx < modalMoves.length) {
+    function nextMove(){
+      if(modalIdx<modalMoves.length){
         modalChess.move(modalMoves[modalIdx]);
         modalIdx++;
-        modalBoard.position(modalChess.fen(), true);
-        highlightMove(modalIdx - 1);
+        modalBoard.position(modalChess.fen(),true);
+        highlightMove(modalIdx-1);
       }
     }
-    function prevMove() {
-      if (modalIdx > 0) {
+    function prevMove(){
+      if(modalIdx>0){
         modalChess.undo();
         modalIdx--;
-        modalBoard.position(modalChess.fen(), true);
-        highlightMove(modalIdx - 1);
+        modalBoard.position(modalChess.fen(),true);
+        highlightMove(modalIdx-1);
       }
     }
 
-    $(async () => {
+    $(async()=>{
       try {
-        const pgn = await fetchPGN();
-        parsePGN(pgn);
+        // загрузка обоих PGN
+        for(let url of PGN_SOURCES){
+          let pgn = await fetchPGN(url);
+          tournaments.push(parsePGNtoTournament(pgn));
+        }
+        renderEventSelector();
         renderRoundSelector();
-      } catch (e) {
+      } catch(e){
         console.error(e);
         $("#boardsContainer").text("Ошибка загрузки PGN");
       }
