@@ -30,11 +30,11 @@
       flex-wrap: wrap;
       justify-content: center;
       gap: 1rem;
-      margin-bottom: 24px;
+      margin-bottom: 16px;
     }
     select {
       appearance: none;
-      background: var(--card-bg) url("data:image/svg+xml;charset=UTF-8,<svg fill='%23666' height='24' viewBox='0 0 24 24' width='24' xmlns='http://www.w3.org/2000/svg'><path d='M7 10l5 5 5-5z'/></svg>") no-repeat right 12px center;
+      background: var(--card-bg) url("data:image/svg+xml;charset=UTF-8,<svg fill='%23666' height='24' viewBox='0 0 24 24' width='24'><path d='M7 10l5 5 5-5z'/></svg>") no-repeat right 12px center;
       padding: 8px 32px 8px 12px;
       border: 1px solid #ccc;
       border-radius: var(--radius);
@@ -50,7 +50,7 @@
     }
     #boardsContainer {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(300px,1fr));
+      grid-template-columns: repeat(auto-fill,minmax(300px,1fr));
       gap: 20px;
     }
     .card {
@@ -128,14 +128,17 @@
       padding: 6px 12px;
       font-size: 16px;
     }
-    /* Нотация в одну строку, излишек скрывается */
+    /* Нотация в одну строку, скрытый скроллбар */
     #notation {
       margin-top: 12px;
       white-space: nowrap;
-      overflow-x: hidden;
-      font-size: 14px;
-      padding: 8px;
-      border-top: 1px solid #ccc;
+      overflow-x: auto;
+      overflow-y: hidden;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none; /* Firefox */
+    }
+    #notation::-webkit-scrollbar {
+      display: none; /* Chrome, Safari */
     }
     #notation span {
       display: inline-block;
@@ -150,7 +153,6 @@
       background: var(--accent);
       color: #fff;
     }
-
     @media (max-width: 480px) {
       header {
         flex-direction: column;
@@ -198,7 +200,7 @@
 
     let tournaments = [], currentIdx = 0;
     let modalBoard, modalChess, modalMoves = [], modalIdx = 0;
-    let touchStartX = null;
+    let startX = null, startY = null, startTime = null;
 
     async function fetchPGN(url) {
       const res = await fetch(CORS_PROXY + encodeURIComponent(url), { cache: 'no-store' });
@@ -263,7 +265,10 @@
         const card = $(`<div class="card board-container"></div>`);
         card.append(`<div class="board-name"><strong>${g.tags.Board||''}</strong></div>`);
         card.append(`<div id="board${id}" class="chessboard"></div>`);
-        card.append(`<div class="game-info"><b>Белые:</b> ${g.tags.White||"?"}<br><b>Чёрные:</b> ${g.tags.Black||"?"}<br><b>Результат:</b> ${g.tags.Result||"*"}<\/div>`);
+        card.append(`<div class="game-info"><b>Белые:</b> ${g.tags.White||"?"}<br>
+                           <b>Чёрные:</b> ${g.tags.Black||"?"}<br>
+                           <b>Результат:</b> ${g.tags.Result||"*"}
+                     </div>`);
         cont.append(card);
         g.board = Chessboard(`board${id}`, {
           position: g.chess.fen(),
@@ -271,7 +276,6 @@
         });
         card.click(() => openModal(g));
       });
-      $("#eventTitle").text(tournaments[currentIdx].event);
     }
 
     function openModal(game) {
@@ -291,22 +295,36 @@
       const notationDiv = $("#notation").empty();
       modalMoves.forEach((mv,idx) => {
         const lbl = (idx%2===0)?`${Math.floor(idx/2)+1}.`:"";
-        notationDiv.append(`<span data-index="${idx}">${lbl}${mv}<\/span>`);
+        notationDiv.append(`<span data-index="${idx}">${lbl}${mv}</span>`);
       });
       $("#notation span").off("click").on("click", function(){
         goToMove(+this.dataset.index);
       });
-      document.onkeydown = e => {
-        if (!$("#modal").hasClass("show")) return;
-        if (e.key==="ArrowRight"||e.key===" ") {e.preventDefault(); nextMove();}
-        if (e.key==="ArrowLeft") {e.preventDefault(); prevMove();}
-      };
-      const swipeArea = document.getElementById("modalContent");
-      swipeArea.ontouchstart = e => { touchStartX = e.changedTouches[0].clientX; };
-      swipeArea.ontouchend = e => {
-        let dx = e.changedTouches[0].clientX - touchStartX;
-        if (dx < -50) nextMove();    // правое слайд -> вперед
-        else if (dx > 50) prevMove(); // левое слайд -> назад
+      //Swipe detection in notation
+      const note = document.getElementById("notation");
+      note.addEventListener("touchstart", function(e){
+        if(e.touches.length!==1) return;
+        startX = e.touches[0].clientX;
+        startY = e.touches[0].clientY;
+        startTime = Date.now();
+      }, { passive: true });
+      note.addEventListener("touchend", function(e){
+        if(startX===null) return;
+        let dx = e.changedTouches[0].clientX - startX;
+        let dy = e.changedTouches[0].clientY - startY;
+        let dt = Date.now() - startTime;
+        if(Math.abs(dx)>100 && Math.abs(dx)>Math.abs(dy) && dt<500){
+          if(dx<0) nextMove();  // swipe left → next
+          else prevMove();      // swipe right → prev
+          e.preventDefault();
+        }
+        startX = startY = startTime = null;
+      }, { passive: false });
+      //Key & click handlers
+      document.onkeydown = e=>{
+        if(!$("#modal").hasClass("show")) return;
+        if(e.key==="ArrowRight"||e.key===" "){ e.preventDefault(); nextMove();}
+        if(e.key==="ArrowLeft"){ e.preventDefault(); prevMove(); }
       };
       $("#modalBoard").off("click").on("click", nextMove);
       highlightMove(-1);
@@ -317,25 +335,25 @@
       document.onkeydown = null;
     }
 
-    function highlightMove(idx) {
+    function highlightMove(idx){
       $("#notation span").removeClass("current");
-      if (idx>=0) {
+      if(idx>=0){
         const el = $(`#notation span[data-index="${idx}"]`);
-        el.addClass("current")[0].scrollIntoView({behavior:"smooth",block:"nearest"});
+        el.addClass("current")[0].scrollIntoView({behavior:"smooth",inline:"center"});
       }
     }
 
-    function goToMove(idx) {
+    function goToMove(idx){
       modalChess.reset();
       modalBoard.start(false);
-      for (let i=0;i<=idx;i++) modalChess.move(modalMoves[i]);
+      for(let i=0;i<=idx;i++) modalChess.move(modalMoves[i]);
       modalBoard.position(modalChess.fen(),true);
       modalIdx = idx+1;
       highlightMove(idx);
     }
 
-    function nextMove() {
-      if (modalIdx<modalMoves.length) {
+    function nextMove(){
+      if(modalIdx<modalMoves.length){
         modalChess.move(modalMoves[modalIdx]);
         modalIdx++;
         modalBoard.position(modalChess.fen(),true);
@@ -343,8 +361,8 @@
       }
     }
 
-    function prevMove() {
-      if (modalIdx>0) {
+    function prevMove(){
+      if(modalIdx>0){
         modalChess.undo();
         modalIdx--;
         modalBoard.position(modalChess.fen(),true);
@@ -354,13 +372,13 @@
 
     $(async()=>{
       try {
-        for (let url of PGN_SOURCES) {
+        for(let url of PGN_SOURCES){
           let pgn = await fetchPGN(url);
           tournaments.push(parsePGNtoTournament(pgn));
         }
         renderEventSelector();
         renderRoundSelector();
-      } catch(e) {
+      } catch(e){
         console.error(e);
         $("#boardsContainer").text("Ошибка загрузки PGN");
       }
