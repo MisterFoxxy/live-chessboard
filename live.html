@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Live 2Chess Multi-Tournament Viewer</n  ><link rel="stylesheet"
+  <title>Live Chess Multi-Tournament Viewer</title>
+  <link rel="stylesheet"
         href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css"
         crossorigin="anonymous"/>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet"/>
@@ -50,8 +51,13 @@
     }
     #boardsContainer {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      grid-template-columns: 1fr;
       gap: 20px;
+    }
+    @media (min-width: 480px) {
+      #boardsContainer {
+        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      }
     }
     .card {
       background: var(--card-bg);
@@ -95,13 +101,13 @@
       width: 100%;
       max-width: 360px;
       max-height: 100%;
-      overflow: hidden;
+      overflow-y: auto;
       box-sizing: border-box;
     }
     #closeModal {
       position: absolute;
       top: 8px; right: 8px;
-      font-size: 24px;
+      font-size: 28px;
       color: var(--text-light);
       background: rgba(255,255,255,0.8);
       border-radius: 50%;
@@ -111,10 +117,8 @@
       cursor: pointer;
     }
     .chessboard { width: 100%; max-width: 300px; margin: auto; }
-    .controls { margin-top: 12px; }
-    .controls button {
-      padding: 6px 12px; margin: 0 8px; font-size: 16px;
-    }
+    .controls { margin-top: 12px; display: flex; justify-content: center; gap: 8px; }
+    .controls button { padding: 6px 12px; font-size: 16px; }
     #notation {
       margin-top: 12px; text-align: left;
       max-height: 150px; overflow-y: auto;
@@ -131,12 +135,6 @@
     #notation span.current {
       background: var(--accent);
       color: #fff;
-    }
-    /* Mobile: stack boards vertically */
-    @media (max-width: 480px) {
-      #boardsContainer {
-        grid-template-columns: 1fr;
-      }
     }
   </style>
 </head>
