@@ -181,7 +181,6 @@
       let tournaments = [], currentIdx = 0;
       let modalBoard, modalChess, modalMoves = [], modalIdx = 0, modalGame = null;
 
-      // Парсинг PGN
       function parsePGNtoTournament(pgn) {
         const blocks = pgn.trim().split(/\r?\n\s*\r?\n(?=\[)/);
         let gamesByRound = {}, event = "";
@@ -210,7 +209,6 @@
         return { event, gamesByRound };
       }
 
-      // Попытка загрузить PGN через очередной прокси
       async function fetchWithProxies(url) {
         for (let p of PROXIES) {
           try {
@@ -223,7 +221,6 @@
         throw new Error("Все прокси не сработали");
       }
 
-      // Инициализация
       async function init() {
         try {
           const texts = await Promise.all(PGN_SOURCES.map(fetchWithProxies));
@@ -233,7 +230,8 @@
           setInterval(updateTournaments, 3000);
         } catch (e) {
           console.error("Ошибка загрузки PGN:", e);
-          $("#boardsContainer").html("<p>Ошибка загрузки данных</p>");
+          $("#boardsContainer").html("<p>Ошибка загрузки данных, повторная попытка через 5 секунд...</p>");
+          setTimeout(init, 5000);
         }
         $("#closeModal").click(closeModal);
         $("#prevBtn").click(prevMove);
@@ -297,7 +295,7 @@
         modalMoves.forEach((mv,idx)=>{
           const span=document.createElement("span");
           span.className="move"; span.dataset.index=idx;
-          span.textContent=(idx%2===0?(Math.floor(idx/2)+1)+'.':'')+mv;
+          span.textContent=(idx%2==0?(Math.floor(idx/2)+1)+'.':'')+mv;
           span.onclick=()=>goToMove(idx);
           note.appendChild(span);
         });
@@ -346,7 +344,6 @@
         }
       }
 
-      // Live-обновление
       async function updateTournaments(){
         for(let ti=0;ti<PGN_SOURCES.length;ti++){
           try{
@@ -370,7 +367,7 @@
                       modalMoves.push(mv);
                       const span=document.createElement("span");
                       span.className="move"; span.dataset.index=idx;
-                      span.textContent=(idx%2===0?(Math.floor(idx/2)+1)+'.':'')+mv;
+                      span.textContent=(idx%2==0?(Math.floor(idx/2)+1)+'.':'')+mv;
                       $("#notation")[0].appendChild(span);
                       span.onclick=()=>goToMove(idx);
                     });
