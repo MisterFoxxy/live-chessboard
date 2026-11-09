@@ -399,26 +399,28 @@
     if (ctx.occ) for (const s of set) for (const o of ctx.occ[s] || []) covered.add(o);
     let min = Infinity;
     for (const s of set) { const v = changes[s] || 0; if (v < min) min = v; }
-    // Самый слабый из ходов (для пары): у каждого хода должна быть своя явная перемена.
-    let minEach = Infinity;
-    for (const m of moves) {
-      let mm = Infinity;
-      for (const s of squaresOfMove(m)) mm = Math.min(mm, changes[s] || 0);
-      minEach = Math.min(minEach, mm);
-    }
     return {
-      moves, set, min, minEach,
+      moves, set, min,
       direct: ctx.strong.filter(s => !set.has(s)).length,
       unexplained: ctx.strong.filter(s => !covered.has(s)).length,
       noise: ctx.changed.filter(s => !covered.has(s)).length,
     };
   }
 
+  const isCastle = c => c.moves.some(m => /[kq]/.test(m.flags));
+
+  /*
+   * Какое объяснение лучше: меньше необъяснённых сильных изменений; рокировка
+   * (если все 4 её клетки изменились) лучше хода одной ладьёй или короля;
+   * затем — у кого самая слабая клетка хода изменилась сильнее.
+   */
   function better(a, b) {
     if (!b) return true;
     if (a.unexplained !== b.unexplained) return a.unexplained < b.unexplained;
-    if (a.set.size !== b.set.size) return a.set.size > b.set.size;
-    return a.min > b.min;
+    const ca = isCastle(a), cb = isCastle(b);
+    if (ca !== cb) return ca;
+    if (Math.abs(a.min - b.min) > 1e-6) return a.min > b.min;
+    return a.set.size > b.set.size;
   }
 
   /**
@@ -466,7 +468,8 @@
         chess.undo();
       }
       // Два хода принимаем, только если они объясняют изменения напрямую лучше одного.
-      if (ok(best2) && best2.unexplained === 0 && best2.minEach >= T * 1.6 &&
+      // Пара ходов — смелое предположение: все её клетки должны измениться явно.
+      if (ok(best2) && best2.unexplained === 0 && best2.min >= T * 2.2 &&
           (!best1 || (best2.direct < best1.direct && best2.unexplained <= best1.unexplained))) {
         return Object.assign({ type: 'move', moves: best2.moves, min: best2.min, double: true }, report);
       }

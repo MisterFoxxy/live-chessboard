@@ -213,6 +213,7 @@ button { cursor: pointer; }
   cursor: pointer;
 }
 .board-mode .cam-wrap .cam-motion { display: none; }
+.board-mode #panelBoard { padding-bottom: 140px; }
 
 .cam-tools { display: flex; flex-wrap: wrap; gap: 8px; }
 
@@ -321,8 +322,8 @@ button { cursor: pointer; }
 #dimmer b { color: #888; font-size: 28px; display: block; margin-bottom: 6px; }
 
 #toast {
-  position: fixed; left: 50%; bottom: calc(24px + var(--safe-b));
-  transform: translateX(-50%) translateY(20px);
+  position: fixed; left: 50%; top: calc(64px + env(safe-area-inset-top, 0px));
+  transform: translateX(-50%) translateY(-12px);
   background: #26262d; border: 1px solid var(--line);
   padding: 10px 16px; border-radius: 12px;
   font-weight: 600; font-size: 14px;

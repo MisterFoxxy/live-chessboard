@@ -180,8 +180,8 @@
     box.innerHTML = games.map(g => `
       <div class="saved-item" data-id="${g.id}">
         <div class="info">
-          <b>${esc(g.white)} – ${esc(g.black)} · ${esc(g.result)}</b>
-          <small>${esc(new Date(g.id).toLocaleString('ru-RU'))} · ${g.plies} пол.</small>
+          <b>${esc(g.white)} – ${esc(g.black)}</b>
+          <small>${esc(g.result === '1/2-1/2' ? '½–½' : g.result)} · ${esc(new Date(g.id).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))} · ${g.plies} пол.</small>
         </div>
         <button data-act="download" aria-label="Скачать">⬇</button>
         <button data-act="copy" aria-label="Копировать">⧉</button>
@@ -900,9 +900,22 @@
     showScreen('screenResult');
   }
 
+  const TRANSLIT = {
+    а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z', и: 'i', й: 'y', к: 'k',
+    л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f', х: 'kh', ц: 'ts',
+    ч: 'ch', ш: 'sh', щ: 'shch', ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya',
+  };
+  const translit = str => Array.from(str).map(ch => {
+    const lo = ch.toLowerCase(), t = TRANSLIT[lo];
+    if (t === undefined) return ch;
+    return ch !== lo && t ? t[0].toUpperCase() + t.slice(1) : t;
+  }).join('');
+
+  // Имя файла латиницей: некоторые браузеры заменяют кириллическое имя на «download».
   function fileName(pgn) {
     const tag = n => (pgn.match(new RegExp('\\[' + n + ' "([^"]*)"\\]')) || [])[1] || '';
-    const base = `${tag('White')}-${tag('Black')}-${tag('Date')}`.replace(/[^\p{L}\p{N}.-]+/gu, '_');
+    const base = translit(`${tag('White')}-${tag('Black')}-${tag('Date')}`)
+      .replace(/[^A-Za-z0-9.-]+/g, '_').replace(/^_+|_+$/g, '');
     return (base || 'game') + '.pgn';
   }
 
@@ -995,7 +1008,7 @@
       cornersChanged();
     });
     $('#btnForceStart').addEventListener('click', () => {
-      if (S.phase !== 'setup') { toast('Запись уже идёт'); return; }
+      if (S.phase !== 'setup') { toast(S.phase === 'ready' ? 'Доска уже распознана' : 'Запись уже идёт'); return; }
       S.kManual = true;
       goReady(null);
       toast('Проверьте подписи a1/h8 на сетке. Если белые не там — «Повернуть».', 3500);
