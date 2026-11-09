@@ -357,28 +357,37 @@
   }
 
   /**
-   * Клетки «за» каждой клеткой — выше по кадру. Высокая фигура закрывает их часть,
-   * поэтому при её появлении/уходе они тоже немного меняются. Это не должно мешать
+   * Клетки, которые может заслонить фигура, стоящая на данной клетке.
+   * Фигура в кадре — вертикальный «силуэт» над центром клетки высотой примерно
+   * в ширину клетки. Чем ниже камера, тем больше клеток он накрывает.
+   * При появлении/уходе фигуры эти клетки тоже меняются — это не должно мешать
    * распознать ход. H — гомография единичного квадрата в кадр, k — ориентация.
    * Возвращает {square: [squares]}.
    */
-  function occlusionMap(H, k) {
-    const center = (r, c) => applyH(H, (c + 0.5) / 8, (r + 0.5) / 8);
+  function occlusionMap(H, k, opts) {
+    opts = opts || {};
+    const heightK = opts.height || 1.1, widthK = opts.width || 0.7;
+    const quad = UNIT.map(p => applyH(H, p[0], p[1]));
+    const Hinv = computeHomography(quad, UNIT);
     const map = {};
     for (const sq of SQUARES) {
       const cell = CELL_OF[k & 3][sq], r = cell >> 3, c = cell & 7;
-      const p = center(r, c);
-      const list = [];
-      for (let dr = -1; dr <= 1; dr++) {
-        for (let dc = -1; dc <= 1; dc++) {
-          const rr = r + dr, cc = c + dc;
-          if ((!dr && !dc) || rr < 0 || rr > 7 || cc < 0 || cc > 7) continue;
-          const q = center(rr, cc);
-          const dx = q[0] - p[0], dy = q[1] - p[1];
-          if (-dy / (Math.hypot(dx, dy) || 1) > 0.6) list.push(cellToSquare(rr * 8 + cc, k));
+      const p = applyH(H, (c + 0.5) / 8, (r + 0.5) / 8);
+      const a = applyH(H, (c + 1.5) / 8, (r + 0.5) / 8), b = applyH(H, (c + 0.5) / 8, (r + 1.5) / 8);
+      const w = Math.max(Math.hypot(a[0] - p[0], a[1] - p[1]), Math.hypot(b[0] - p[0], b[1] - p[1]));
+      const hits = {};
+      for (let i = 1; i <= 8; i++) {
+        const y = p[1] - w * heightK * i / 8;
+        for (let j = -2; j <= 2; j++) {
+          const x = p[0] + w * widthK * j / 4;
+          const q = applyH(Hinv, x, y);
+          const cc = Math.floor(q[0] * 8), rr = Math.floor(q[1] * 8);
+          if (cc < 0 || cc > 7 || rr < 0 || rr > 7 || (cc === c && rr === r)) continue;
+          const key = rr * 8 + cc;
+          hits[key] = (hits[key] || 0) + 1;
         }
       }
-      map[sq] = list;
+      map[sq] = Object.keys(hits).filter(key => hits[key] >= 3).map(key => cellToSquare(+key, k));
     }
     return map;
   }
@@ -386,17 +395,19 @@
   function candidate(moves, changes, ctx) {
     const set = new Set();
     for (const m of moves) for (const s of squaresOfMove(m)) set.add(s);
-    // Перекрытие правдоподобно, только если клетка «за» изменилась не сильно больше самой клетки хода.
     const covered = new Set(set);
-    if (ctx.occ) {
-      for (const s of set) {
-        for (const o of ctx.occ[s] || []) if ((changes[o] || 0) <= 1.5 * (changes[s] || 0)) covered.add(o);
-      }
-    }
+    if (ctx.occ) for (const s of set) for (const o of ctx.occ[s] || []) covered.add(o);
     let min = Infinity;
     for (const s of set) { const v = changes[s] || 0; if (v < min) min = v; }
+    // Самый слабый из ходов (для пары): у каждого хода должна быть своя явная перемена.
+    let minEach = Infinity;
+    for (const m of moves) {
+      let mm = Infinity;
+      for (const s of squaresOfMove(m)) mm = Math.min(mm, changes[s] || 0);
+      minEach = Math.min(minEach, mm);
+    }
     return {
-      moves, set, min,
+      moves, set, min, minEach,
       direct: ctx.strong.filter(s => !set.has(s)).length,
       unexplained: ctx.strong.filter(s => !covered.has(s)).length,
       noise: ctx.changed.filter(s => !covered.has(s)).length,
@@ -430,8 +441,7 @@
     const report = { changed: ctx.changed, strong: ctx.strong };
     if (!ctx.changed.length) return Object.assign({ type: 'none' }, report);
 
-    const changedSet = new Set(ctx.changed);
-    const fits = m => squaresOfMove(m).every(s => changedSet.has(s));
+    const fits = m => squaresOfMove(m).every(s => changes[s] >= T);
     const ok = c => c && c.unexplained <= 1 && c.noise <= maxExtra;
 
     const firstMoves = uniqueMoves(chess.moves({ verbose: true })).filter(fits);
@@ -456,7 +466,7 @@
         chess.undo();
       }
       // Два хода принимаем, только если они объясняют изменения напрямую лучше одного.
-      if (ok(best2) && best2.unexplained === 0 &&
+      if (ok(best2) && best2.unexplained === 0 && best2.minEach >= T * 1.6 &&
           (!best1 || (best2.direct < best1.direct && best2.unexplained <= best1.unexplained))) {
         return Object.assign({ type: 'move', moves: best2.moves, min: best2.min, double: true }, report);
       }
@@ -464,6 +474,22 @@
 
     if (ok(best1)) {
       return Object.assign({ type: 'move', moves: best1.moves, min: best1.min, weak: true }, report);
+    }
+
+    // Запасной вариант для низкой камеры: клетку, откуда ушла фигура, могут полностью
+    // закрывать фигуры впереди. Тогда допускаем, что её уход виден по клеткам в её тени,
+    // но только если клетка назначения изменилась явно и такой ход единственный.
+    if (ctx.occ) {
+      const seen = s => changes[s] >= T || (ctx.occ[s] || []).some(o => changes[o] >= T);
+      const relaxed = [];
+      for (const m of uniqueMoves(chess.moves({ verbose: true }))) {
+        if ((changes[m.to] || 0) < T * 1.6 || !squaresOfMove(m).every(seen)) continue;
+        const c = candidate([m], changes, ctx);
+        if (c.unexplained === 0 && c.noise <= maxExtra) relaxed.push(c);
+      }
+      if (relaxed.length === 1) {
+        return Object.assign({ type: 'move', moves: relaxed[0].moves, min: relaxed[0].min, weak: true, relaxed: true }, report);
+      }
     }
     return Object.assign({ type: 'unclear' }, report);
   }
@@ -476,7 +502,7 @@
      * Время передаётся в push() снаружи, поэтому поведение не зависит от частоты кадров.
      */
     constructor(opts) {
-      this.opts = Object.assign({ settleMs: 700, minFrames: 2, keepFrames: 6, motionMin: 5, motionMax: 18, motionK: 3, rank: 2 }, opts);
+      this.opts = Object.assign({ settleMs: 700, minFrames: 2, keepFrames: 6, motionMin: 5, motionMax: 18, motionK: 3, rank: 1 }, opts);
       this.reset();
     }
 
