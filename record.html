@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+  <meta name="theme-color" content="#0b0b0d"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <title>Запись партии камерой</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="css/record.css"/>
+</head>
+<body>
+<div id="app">
+
+  <!-- ===== Экран 1: партия ===== -->
+  <section id="screenSetup" class="screen active">
+    <header class="topbar">
+      <a class="icon-btn" href="index.html" aria-label="На главную">‹</a>
+      <h1>Сейчас</h1>
+      <span></span>
+    </header>
+
+    <div id="resumeBanner" class="card resume" hidden>
+      <p>Есть незаконченная запись: <b id="resumeInfo"></b></p>
+      <button id="btnResume" class="btn primary">Продолжить</button>
+    </div>
+
+    <div class="card">
+      <input id="fEvent" class="title-input" placeholder="Название партии или турнира" autocomplete="off"/>
+      <div class="meta">
+        <span id="metaDate"></span>
+        <span class="badge-live">● идёт</span>
+      </div>
+      <div class="fields">
+        <label class="field wide"><span>Контроль времени</span>
+          <select id="fTime">
+            <option value="">—</option>
+            <option value="60+0">Пуля · 1 мин</option>
+            <option value="180+2">Блиц · 3 мин + 2 сек</option>
+            <option value="300+0">Блиц · 5 мин</option>
+            <option value="300+3" selected>Блиц · 5 мин + 3 сек</option>
+            <option value="600+5">Рапид · 10 мин + 5 сек</option>
+            <option value="900+10">Рапид · 15 мин + 10 сек</option>
+            <option value="5400+30">Классика · 90 мин + 30 сек</option>
+          </select>
+        </label>
+        <label class="field"><span>Место</span><input id="fSite" placeholder="Москва · клуб"/></label>
+        <label class="field"><span>Тур / стол</span><input id="fRound" placeholder="1" inputmode="numeric"/></label>
+      </div>
+
+      <div class="section-label">Ваша партия</div>
+      <div class="players">
+        <div class="player white">
+          <div class="avatar"><img src="img/chesspieces/wikipedia/wK.png" alt=""/></div>
+          <input id="fWhite" placeholder="Белые" autocomplete="off"/>
+          <input id="fWhiteElo" class="elo" placeholder="рейтинг" inputmode="numeric"/>
+        </div>
+        <div class="vs">VS</div>
+        <div class="player black">
+          <div class="avatar"><img src="img/chesspieces/wikipedia/bK.png" alt=""/></div>
+          <input id="fBlack" placeholder="Чёрные" autocomplete="off"/>
+          <input id="fBlackElo" class="elo" placeholder="рейтинг" inputmode="numeric"/>
+        </div>
+      </div>
+    </div>
+
+    <button id="btnCamera" class="btn primary">📷 Запись партии камерой</button>
+    <label class="btn" for="fileVideo">🎞 Распознать из видеофайла</label>
+    <input id="fileVideo" type="file" accept="video/*" hidden/>
+
+    <div class="section-label">Мои партии</div>
+    <div class="card" id="savedList"><p class="empty">Пока нет сохранённых партий.</p></div>
+  </section>
+
+  <!-- ===== Экран 2: запись ===== -->
+  <section id="screenRecord" class="screen">
+    <header class="topbar">
+      <button id="btnBack" class="icon-btn" aria-label="Назад">‹</button>
+      <h1>Запись</h1>
+      <button id="btnDim" class="icon-btn" aria-label="Затемнить экран" title="Затемнить экран">☾</button>
+    </header>
+
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-tab="screen" role="tab">Экран</button>
+      <button class="tab" data-tab="board" role="tab">Доска</button>
+    </div>
+
+    <div id="status" class="status search">Ищу доску…</div>
+
+    <div id="camWrap" class="cam-wrap">
+      <video id="video" playsinline muted autoplay></video>
+      <canvas id="overlay"></canvas>
+      <div id="camBadge" class="cam-badge">КАМЕРА</div>
+      <div id="camMotion" class="cam-motion" hidden>✋ рука над доской</div>
+    </div>
+
+    <div id="panelScreen" class="panel active">
+      <div class="cam-tools">
+        <button id="btnPlay" class="chip" hidden>▶ Запустить видео</button>
+        <button id="btnRotate" class="chip">↻ Повернуть</button>
+        <button id="btnResetCorners" class="chip">Сбросить углы</button>
+        <button id="btnForceStart" class="chip">Начать без проверки</button>
+      </div>
+
+      <div class="card howto">
+        <div class="section-label">Как начать запись</div>
+        <ol>
+          <li>Поставьте телефон на штатив так, чтобы вся доска попадала в кадр и была как можно крупнее. Лучше сбоку от доски и повыше, а не за спиной игрока: так рука после хода не закрывает фигуру от камеры.</li>
+          <li>Перетащите 4 жёлтые точки на углы игрового поля (без рамки с буквами и цифрами).</li>
+          <li>Расставьте фигуры в начальную позицию и дождитесь зелёной сетки — значит, доска распознана.</li>
+          <li>Запись начнётся сама с первым ходом. Ход засчитывается, как только вы отпустили фигуру и рука открыла клетку, — убирать руку с доски не нужно.</li>
+        </ol>
+      </div>
+
+      <details class="card settings">
+        <summary>Настройки распознавания</summary>
+        <label class="setting">
+          <span>Порог изменения клетки</span><b id="valThreshold"></b>
+          <input id="setThreshold" type="range" min="6" max="40" step="1"/>
+          <small>Меньше — чувствительнее (тусклый свет, мелкие фигуры). Больше — меньше ложных ходов.</small>
+        </label>
+        <label class="setting">
+          <span>Задержка фиксации хода</span><b id="valFast"></b>
+          <input id="setFast" type="range" min="60" max="600" step="20"/>
+          <small>Сколько клетка должна быть неподвижной после того, как вы отпустили фигуру. Меньше — быстрее, больше — надёжнее.</small>
+        </label>
+        <label class="toggle"><span>ИИ: учится узнавать руку и фигуры</span><input id="setAI" type="checkbox"/></label>
+        <small class="ai-info" id="aiInfo">Нейросеть обучается прямо во время партии на вашей доске.</small>
+        <label class="toggle"><span>Звук и вибрация при ходе</span><input id="setSound" type="checkbox"/></label>
+        <label class="toggle"><span>Показывать изменения клеток</span><input id="setHeatmap" type="checkbox"/></label>
+      </details>
+    </div>
+
+    <div id="panelBoard" class="panel">
+      <div class="turn">
+        <span id="turnDot" class="dot white"></span><b id="turnText">Ход белых</b>
+        <small id="moveCounter">ходов пока нет</small>
+      </div>
+      <div id="board" class="board" aria-label="Цифровая доска"></div>
+      <div id="promo" class="promo" hidden></div>
+      <button id="btnFinish" class="btn primary">Закончить партию</button>
+      <div id="moveList" class="moves"></div>
+      <div class="board-tools">
+        <button id="btnUndo" class="chip">↶ Отменить ход</button>
+        <button id="btnFlip" class="chip">⇅ Перевернуть</button>
+        <button id="btnRebase" class="chip">✓ Фигуры стоят верно</button>
+      </div>
+      <p class="hint">Ход распознан неверно? Отмените его и сделайте правильный ход на цифровой доске: нажмите на фигуру, затем на клетку.</p>
+    </div>
+  </section>
+
+  <!-- ===== Экран 3: итог ===== -->
+  <section id="screenResult" class="screen">
+    <header class="topbar">
+      <button id="btnResultBack" class="icon-btn" aria-label="К партии">‹</button>
+      <h1>Партия записана</h1>
+      <span></span>
+    </header>
+    <div class="card summary">
+      <div class="names"><span id="sumWhite"></span><span class="vs">VS</span><span id="sumBlack"></span></div>
+      <div id="sumScore" class="score"></div>
+      <div id="sumMeta" class="meta" style="justify-content:center"></div>
+    </div>
+    <textarea id="pgnOut" class="pgn" readonly></textarea>
+    <div class="btn-row">
+      <button id="btnDownload" class="btn">⬇ Скачать</button>
+      <button id="btnCopy" class="btn">⧉ Копировать</button>
+      <button id="btnShare" class="btn">↗ Поделиться</button>
+    </div>
+    <button id="btnNewGame" class="btn primary">Новая партия</button>
+  </section>
+</div>
+
+<!-- Шторка завершения партии -->
+<div id="finishSheet" class="sheet-backdrop" hidden>
+  <div class="sheet">
+    <h2>Закончить партию</h2>
+    <p id="finishHint">Выберите результат.</p>
+    <div class="btn-row">
+      <button class="btn result-btn" data-result="1-0">1–0<small>Белые выиграли</small></button>
+      <button class="btn result-btn" data-result="1/2-1/2">½–½<small>Ничья</small></button>
+      <button class="btn result-btn" data-result="0-1">0–1<small>Чёрные выиграли</small></button>
+    </div>
+    <button class="btn" data-result="*">Без результата</button>
+    <button id="btnFinishCancel" class="btn danger">Продолжить запись</button>
+  </div>
+</div>
+
+<div id="dimmer" hidden>
+  <div><b id="dimMoves">0</b>ходов записано<br/>Запись идёт. Коснитесь экрана, чтобы включить его.</div>
+</div>
+<div id="toast" role="status"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js" crossorigin="anonymous"></script>
+<script src="js/board-vision.js"></script>
+<script src="js/square-ai.js"></script>
+<script src="js/record.js"></script>
+</body>
+</html>

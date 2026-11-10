@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+  <meta name="theme-color" content="#0b0b0d"/>
+  <title>Live Chessboard</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="css/record.css"/>
+  <style>
+    .hero { padding: 32px 0 8px; }
+    .hero h1 { font-size: 26px; margin: 0 0 6px; }
+    .hero p { color: var(--muted); margin: 0; }
+    a.tile {
+      display: flex; gap: 14px; align-items: center;
+      text-decoration: none; color: var(--text);
+    }
+    a.tile .ico {
+      flex: none; width: 52px; height: 52px; border-radius: 14px;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--card-2); font-size: 26px;
+    }
+    a.tile.main .ico { background: var(--accent); }
+    a.tile b { display: block; font-size: 17px; }
+    a.tile small { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div class="hero">
+      <h1>Live Chessboard</h1>
+      <p>Запись и трансляция живых шахматных партий.</p>
+    </div>
+    <a class="card tile main" href="record.html">
+      <span class="ico">📷</span>
+      <span><b>Запись партии камерой</b><small>Телефон на штативе записывает ходы с настоящей доски.</small></span>
+    </a>
+    <a class="card tile" href="live.html">
+      <span class="ico">♟</span>
+      <span><b>Live-трансляция турниров</b><small>Доски всех столов в реальном времени.</small></span>
+    </a>
+  </div>
+</body>
+</html>
