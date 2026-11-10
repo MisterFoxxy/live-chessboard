@@ -128,6 +128,7 @@
         </label>
         <label class="toggle"><span>ИИ: учится узнавать руку и фигуры</span><input id="setAI" type="checkbox"/></label>
         <small class="ai-info" id="aiInfo">Нейросеть обучается прямо во время партии на вашей доске.</small>
+        <label class="toggle"><span>Записывать видео партии (для отладки)</span><input id="setSaveVideo" type="checkbox"/></label>
         <label class="toggle"><span>Звук и вибрация при ходе</span><input id="setSound" type="checkbox"/></label>
         <label class="toggle"><span>Показывать изменения клеток</span><input id="setHeatmap" type="checkbox"/></label>
       </details>
@@ -168,6 +169,16 @@
       <button id="btnDownload" class="btn">⬇ Скачать</button>
       <button id="btnCopy" class="btn">⧉ Копировать</button>
       <button id="btnShare" class="btn">↗ Поделиться</button>
+    </div>
+    <div id="debugCard" class="card" hidden>
+      <div class="section-label">Если записалось не так, как вы ходили</div>
+      <p class="hint" style="margin-top:0">Отправьте видео партии и журнал программы — по ним можно увидеть, где распознавание ошиблось, и исправить его.</p>
+      <button id="btnSendDebug" class="btn">↗ Отправить видео и журнал</button>
+      <div class="btn-row two">
+        <button id="btnDebugVideo" class="btn">⬇ Видео</button>
+        <button id="btnDebugLog" class="btn">⬇ Журнал</button>
+      </div>
+      <small id="debugInfo" class="ai-info"></small>
     </div>
     <button id="btnNewGame" class="btn primary">Новая партия</button>
   </section>
