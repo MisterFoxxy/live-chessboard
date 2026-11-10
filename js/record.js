@@ -100,7 +100,7 @@
   const camWrap = $('#camWrap');
   const proc = document.createElement('canvas');
   const pctx = proc.getContext('2d', { willReadFrequently: true });
-  const tracker = new BV.MotionTracker({ settleMs: SETTLE_MS });
+  const tracker = new BV.MotionTracker({ settleMs: SETTLE_MS, skipDup: false });
   const ai = new AI.SquareAI();
   const debugLog = [];
   const motionLog = [];
@@ -352,6 +352,12 @@
       S.H = BV.computeHomography(BV.UNIT, q.map(p => [p[0] * w, p[1] * h]));
       if (!S.H) return null;
       S.cam = BV.cameraFromH(S.H, w, h); // где камера: куда на кадре наклоняются фигуры
+      // Сверху чёрная фигура на тёмной клетке почти не отличается по яркости — сравниваем клетки
+      // с поправкой на яркость и по оттенку. Сбоку фигуры видны контрастно, там проще и надёжнее
+      // обычная разница.
+      BV.diffOpts.mode = S.cam.tilt < QUIET_MAX_TILT ? 'rel' : 'plain';
+      // Повторы кадра (видеофайл обрабатывается быстрее, чем идут кадры) не считаем шумом.
+      tracker.opts.skipDup = !window.vcKeepDup && S.cam.tilt < QUIET_MAX_TILT;
       S.plan = BV.samplePlan(S.H, Object.assign({ camera: S.cam }, SAMPLE_OPTS));
       S.occ = null;
     }
@@ -683,8 +689,12 @@
    */
   const QUIET_MS = 250;
   const QUIET_MAX_MOVING = 6; // рука может лежать или шевелиться в углу доски — эти клетки не оцениваем
+  // Восстановление ходов по паузам включаем, когда камера смотрит на доску сверху (как в держателе
+  // над центром доски). Сбоку рука и наклоны фигур закрывают слишком много клеток — там
+  // надёжнее прежняя проверка (onSettled).
+  const QUIET_MAX_TILT = 35;
   function quietCheck(feat, t) {
-    if (!S.fullRef) return false;
+    if (!S.fullRef || window.vcNoQuiet || !S.cam || !(S.cam.tilt < QUIET_MAX_TILT)) return false;
     const movingCells = [];
     let last = 0;
     for (let c = 0; c < 64; c++) {
@@ -778,6 +788,20 @@
     }
     // Новая точка отсчёта. Клетки под рукой берём из старого эталона, если их содержимое
     // не изменилось; если изменилось — точку отсчёта не двигаем, эти клетки переснимем позже.
+    // Остаток изменений похож на ещё один ход (слабо видный: белая пешка на светлой клетке сбоку)?
+    // Тогда точку отсчёта не двигаем — иначе этот ход «растворится» в эталоне.
+    const left = new Set(b.noiseAt);
+    if (S.chess.moves({ verbose: true }).some(m => BV.squaresOfMove(m).every(q => left.has(q)))) {
+      if (fix) {
+        // эталон быстрой фиксации — по клеткам исправленных ходов
+        const cells = new Set();
+        for (const m of b.moves) for (const q of BV.squaresOfMove(m)) if (!mask.has(q)) cells.add(BV.squareToCell(q, S.k));
+        BV.copyCells(S.ref, steady, Array.from(cells));
+        S.snaps = [];
+        S.lastFast = null;
+      }
+      return fix;
+    }
     // Новая точка отсчёта. Клетки под рукой берём из старого эталона; те из них, где содержимое
     // изменилось (или эталон уже был устаревшим), переснимем, когда рука уйдёт.
     const code = (pos, q) => { const p = pos.get(q); return p ? p.color + p.type : ''; };

@@ -147,7 +147,10 @@
       const pz = X * r1[2] + Y * r2[2] + Z * r3[2] + t[2];
       return [f * px / pz + cx, f * py / pz + cy];
     };
-    return { f, project };
+    // Наклон камеры: угол между её осью и перпендикуляром к доске (0° — ровно сверху).
+    const n = Math.hypot(r3[0], r3[1], r3[2]) || 1;
+    const tilt = Math.acos(Math.min(1, Math.abs(r3[2]) / n)) * 180 / Math.PI;
+    return { f, project, tilt };
   }
 
   /** Куда на кадре «наклоняется» вертикальная фигура в точке доски (u, v ∈ [0,1]). */
@@ -1213,7 +1216,7 @@
     constructor(opts) {
       this.opts = Object.assign({
         settleMs: 700, minFrames: 2, keepFrames: 6,
-        motionMin: 5, motionMax: 45, motionK: 2, noiseWindow: 120, noisePct: 0.1,
+        motionMin: 5, motionMax: 45, motionK: 2, noiseWindow: 120, noisePct: 0.1, skipDup: true,
       }, opts);
       this.reset();
     }
@@ -1277,8 +1280,8 @@
       this.lastCells = cells;
       // Повтор того же кадра (видеофайл, браузер не успел получить новый) — для оценки шума
       // не считаем: иначе «шум» окажется нулевым и любое мерцание будет выглядеть движением.
-      let dup = true;
-      for (let c = 0; c < 64; c++) if (cells[c] > 0.05) { dup = false; break; }
+      let dup = this.opts.skipDup;
+      if (dup) for (let c = 0; c < 64; c++) if (cells[c] > 0.05) { dup = false; break; }
       const n = this.opts.noiseWindow;
       if (!dup) {
         for (let c = 0; c < 64; c++) this.hist[c * n + this.histPos] = cells[c];
