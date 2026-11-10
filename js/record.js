@@ -15,7 +15,7 @@
 
   /* ---------- Константы и утилиты ---------- */
 
-  const APP_VERSION = '12 · ИИ проверяет, что стоит на клетках';
+  const APP_VERSION = '13 · видео для обучения ИИ';
   const TICK_MS = 33;      // ~30 кадров/с
   const SETTLE_MS = 600;   // полная проверка, когда вся доска неподвижна
   const PROC_W = 640;
@@ -1847,6 +1847,33 @@
     return null;
   }
 
+  /** Загружает файлы в папку репозитория по одному (большие делит на части), с полосой прогресса. */
+  async function ghUploadFiles(folder, files, label, bar, info) {
+    const part = window.vcGhPart || GH_PART; // размер части (в проверках — меньше)
+    const list = [];
+    for (const f of files) {
+      if (f.blob.size <= part) list.push(f);
+      else for (let i = 0, k = 1; i < f.blob.size; i += part, k++) list.push({ name: `${f.name}.part${k}`, blob: f.blob.slice(i, i + part) });
+    }
+    const total = list.reduce((n, f) => n + f.blob.size, 0) * 4 / 3 + 1;
+    let done = 0;
+    bar.hidden = false;
+    const show = x => { bar.firstElementChild.style.width = Math.min(100, Math.round(x / total * 100)) + '%'; };
+    show(0);
+    for (const f of list) {
+      info.textContent = `Отправляю ${f.name} (${(f.blob.size / 1048576).toFixed(1)} МБ)…`;
+      const content = await blobToBase64(f.blob);
+      const r = await ghRequest('PUT', `/repos/${gh.repo}/contents/${ghPath(folder + '/' + f.name)}`,
+        { message: `${label}: ${f.name}`, content }, loaded => show(done + loaded));
+      if (r.status !== 200 && r.status !== 201) throw new Error(ghError(r.status, r.data));
+      done += content.length;
+      show(done);
+    }
+    show(total);
+  }
+
+  const ghFail = e => (e && e.message === 'network' ? 'Нет связи с GitHub. Попробуйте ещё раз.' : (e && e.message) || 'Не удалось отправить.');
+
   async function ghSend() {
     const info = $('#ghInfo'), bar = $('#ghProgress'), btn = $('#btnGhSend');
     if (!gh.repo || !gh.token) {
@@ -1860,34 +1887,47 @@
       const folder = `reports/${debugBaseName()}-${stamp}`;
       const files = [{ name: 'log.json', blob: new Blob([debugLogJson()], { type: 'application/json' }) }];
       const v = debugVideoFile();
-      if (v) {
-        const ext = v.name.split('.').pop();
-        const part = window.vcGhPart || GH_PART; // размер части (в проверках — меньше)
-        if (v.size <= part) files.push({ name: 'video.' + ext, blob: v });
-        else for (let i = 0, k = 1; i < v.size; i += part, k++) files.push({ name: `video.${ext}.part${k}`, blob: v.slice(i, i + part) });
-      }
-      const total = files.reduce((n, f) => n + f.blob.size, 0) * 4 / 3 + 1;
-      let done = 0;
-      bar.hidden = false;
-      const show = x => { bar.firstElementChild.style.width = Math.min(100, Math.round(x / total * 100)) + '%'; };
-      show(0);
-      for (const f of files) {
-        info.textContent = `Отправляю ${f.name} (${(f.blob.size / 1048576).toFixed(1)} МБ)…`;
-        const content = await blobToBase64(f.blob);
-        const r = await ghRequest('PUT', `/repos/${gh.repo}/contents/${ghPath(folder + '/' + f.name)}`,
-          { message: `Отчёт ${debugBaseName()}: ${f.name}`, content }, loaded => show(done + loaded));
-        if (r.status !== 200 && r.status !== 201) throw new Error(ghError(r.status, r.data));
-        done += content.length;
-        show(done);
-      }
-      show(total);
+      if (v) files.push({ name: 'video.' + v.name.split('.').pop(), blob: v });
+      await ghUploadFiles(folder, files, 'Отчёт ' + debugBaseName(), bar, info);
       store.set('vc_gh_last', folder);
       info.textContent = `Отправлено: ${gh.repo} → ${folder}. Напишите разработчику «отправил отчёт».`;
       toast('Отчёт отправлен');
     } catch (e) {
-      info.textContent = e && e.message === 'network' ? 'Нет связи с GitHub. Попробуйте ещё раз.' : (e && e.message) || 'Не удалось отправить.';
+      info.textContent = ghFail(e);
     } finally {
       btn.disabled = false;
+    }
+  }
+
+  /** Видео партий (например, из idChess) для обучения распознавания — в папку training. */
+  async function ghSendTraining(fileList) {
+    const info = $('#trainInfo'), bar = $('#trainProgress');
+    if (!gh.token) {
+      $('#trainTokenRow').hidden = false;
+      info.textContent = 'Сначала вставьте токен GitHub (тот же, что для отчётов) и нажмите «Сохранить».';
+      return;
+    }
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    $('#trainPick').classList.add('disabled');
+    const d = new Date(), pad = n => String(n).padStart(2, '0');
+    const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+    let sent = 0;
+    try {
+      for (const f of files) {
+        const base = translit(f.name.replace(/\.[^.]+$/, '')).replace(/[^A-Za-z0-9.-]+/g, '_').replace(/^_+|_+$/g, '') || 'video';
+        const ext = (f.name.match(/\.([A-Za-z0-9]+)$/) || [])[1] || 'mp4';
+        const folder = `training/${stamp}-${String(sent + 1).padStart(2, '0')}-${base}`;
+        await ghUploadFiles(folder, [{ name: 'video.' + ext.toLowerCase(), blob: f }], `Видео для обучения ${sent + 1}/${files.length}`, bar, info);
+        sent++;
+      }
+      info.textContent = `Отправлено видео: ${sent}. Напишите разработчику «отправил видео для обучения».`;
+      toast('Видео отправлены');
+    } catch (e) {
+      info.textContent = (sent ? `Отправлено ${sent} из ${files.length}. ` : '') + ghFail(e);
+    } finally {
+      $('#trainPick').classList.remove('disabled');
+      $('#trainFiles').value = '';
     }
   }
 
@@ -2071,6 +2111,20 @@
       $('#ghInfo').textContent = 'Токен удалён с этого телефона.';
     });
     $('#btnGhSend').addEventListener('click', ghSend);
+    $('#trainFiles').addEventListener('change', e => ghSendTraining(e.target.files));
+    $('#trainTokenRow').hidden = !!gh.token;
+    $('#trainTokenSave').addEventListener('click', async () => {
+      const token = $('#trainToken').value.trim();
+      if (!token) return;
+      store.set('vc_gh_token', token);
+      keepStorage();
+      $('#trainToken').value = '';
+      ghFill();
+      $('#trainInfo').textContent = 'Проверяю доступ…';
+      const err = await ghCheck();
+      $('#trainInfo').textContent = err || 'Готово: можно выбирать видео.';
+      if (!err) $('#trainTokenRow').hidden = true;
+    });
     $('#btnSendDebug').addEventListener('click', async () => {
       const files = [debugVideoFile(), debugLogFile()].filter(Boolean);
       try {
