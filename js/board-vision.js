@@ -216,9 +216,18 @@
    * и обычное среднее «размывает» её появление или исчезновение.
    */
   function cellDiff(a, b, topFrac) {
-    let g = b.mean > 1 ? a.mean / b.mean : 1;
-    if (g < 0.7) g = 0.7; else if (g > 1.4) g = 1.4;
     const cnt = a.per / 3, out = new Float32Array(64);
+    // Поправка на экспозицию — медиана отношений яркости по клеткам:
+    // рука над частью доски на неё почти не влияет.
+    const ratios = new Float32Array(64);
+    for (let cell = 0; cell < 64; cell++) {
+      let sa = 0, sb = 0;
+      const o = cell * a.per;
+      for (let i = 0; i < a.per; i++) { sa += a.data[o + i]; sb += b.data[o + i]; }
+      ratios[cell] = sb > 1 ? sa / sb : 1;
+    }
+    let g = median(ratios);
+    if (!(g >= 0.7)) g = 0.7; else if (g > 1.4) g = 1.4;
     const top = Math.max(1, Math.round(cnt * (topFrac || 0.35)));
     const d = new Float32Array(cnt);
     for (let cell = 0; cell < 64; cell++) {
@@ -228,11 +237,23 @@
                 Math.abs(a.data[k + 2] - b.data[k + 2] * g)) / 3;
       }
       d.sort();
-      let s = 0;
-      for (let i = cnt - top; i < cnt; i++) s += d[i];
-      out[cell] = s / top;
+      let sum = 0;
+      for (let i = cnt - top; i < cnt; i++) sum += d[i];
+      out[cell] = sum / top;
     }
     return out;
+  }
+
+  function cloneFeatures(f) {
+    return { n: f.n, per: f.per, data: new Float32Array(f.data), mean: f.mean };
+  }
+
+  /** Копирует отпечатки указанных клеток из src в dst. */
+  function copyCells(dst, src, cells) {
+    for (const cell of cells) {
+      const o = cell * src.per;
+      dst.data.set(src.data.subarray(o, o + src.per), o);
+    }
   }
 
   /** Средняя яркость и «текстура» (СКО яркости) каждой клетки. */
@@ -456,7 +477,8 @@
       return Object.assign({ type: 'move', moves: best1.moves, min: best1.min }, report);
     }
 
-    if (opts.allowDouble !== false && ctx.strong.length >= 3) {
+    // Два хода подряд ищем, только если один ход (с учётом заслонённых клеток) картину не объясняет.
+    if (opts.allowDouble !== false && ctx.strong.length >= 3 && (!best1 || best1.unexplained >= 1)) {
       let best2 = null;
       for (const m1 of firstMoves) {
         if (!chess.move({ from: m1.from, to: m1.to, promotion: m1.promotion })) continue;
@@ -497,6 +519,116 @@
     return Object.assign({ type: 'unclear' }, report);
   }
 
+  /**
+   * Насколько последовательность уже записанных ходов объясняет изменения:
+   * fits — все клетки ходов действительно изменились; unexplained/noise — что осталось.
+   */
+  function scoreMoves(moves, changes, opts) {
+    const T = opts.threshold || 14;
+    const all = Object.keys(changes);
+    const ctx = {
+      occ: opts.occ || null,
+      changed: all.filter(s => changes[s] >= T),
+      strong: all.filter(s => changes[s] >= T * 1.6),
+    };
+    const c = candidate(moves, changes, ctx);
+    c.fits = moves.every(m => squaresOfMove(m).every(s => (changes[s] || 0) >= T * 0.7));
+    return c;
+  }
+
+  /** Ход — первая половина рокировки «ладьёй вперёд» (ладья с угла, когда рокировка возможна)? */
+  function castlingPrefix(legal, m) {
+    if (m.piece !== 'r') return false;
+    const rank = m.color === 'w' ? '1' : '8';
+    const side = m.from === 'h' + rank ? 'k' : m.from === 'a' + rank ? 'q' : null;
+    return !!side && legal.some(x => x.flags.indexOf(side) >= 0);
+  }
+
+  /**
+   * Быстрая фиксация хода прямо во время движения руки.
+   * Ход принимается, когда все его клетки изменились и уже неподвижны fastMs, причём
+   * на клетке назначения что-то происходило уже после того, как фигуру подняли с исходной
+   * (иначе это ещё «фигура в руке»: например, сначала сняли побитую фигуру).
+   * Клетки, над которыми ещё движется рука, не мешают.
+   * opts: threshold, occ, stillMs {square: мс неподвижности}, lastMotion {square: время
+   *       последнего движения}, onset {square: когда клетка начала отличаться от эталона},
+   *       fastMs, ignore (Set клеток с возможно устаревшим эталоном), maxOther.
+   * Возвращает verbose-ход chess.js или null.
+   */
+  function findFastMove(chess, changes, opts) {
+    const T = opts.threshold || 14;
+    const fastMs = opts.fastMs || 120;
+    const still = s => opts.stillMs[s] >= fastMs;
+    const ignore = opts.ignore || new Set();
+    const all = Object.keys(changes);
+    // Готовые клетки: изменились и неподвижны. Клетки недавних ходов (ignore) могут
+    // участвовать в ходе (взятие в ответ), но не считаются «лишними» изменениями.
+    const ready = all.filter(s => still(s) && changes[s] >= T);
+    if (opts.trace) opts.trace.reasons.push('ready=' + ready.join(','));
+    if (ready.length < 2) return null;
+    const considered = ready.filter(s => !ignore.has(s));
+    const ctx = {
+      occ: opts.occ || null,
+      changed: considered,
+      strong: considered.filter(s => changes[s] >= T * 1.6),
+    };
+    const changedSet = new Set(ctx.changed);
+    // Пятно соседних неподвижных изменившихся клеток вокруг клетки (по 8 соседям).
+    const blob = start => {
+      const seen = new Set([start]), queue = [start];
+      while (queue.length) {
+        const q = queue.pop(), f = q.charCodeAt(0), r = +q[1];
+        for (let df = -1; df <= 1; df++) {
+          for (let dr = -1; dr <= 1; dr++) {
+            const n = String.fromCharCode(f + df) + (r + dr);
+            if (changedSet.has(n) && !seen.has(n)) { seen.add(n); queue.push(n); }
+          }
+        }
+      }
+      return seen;
+    };
+    const minCarry = opts.minCarryMs != null ? opts.minCarryMs : 100;
+    const legal = chess.moves({ verbose: true });
+    const cands = [];
+    const trace = opts.trace && opts.trace.san;
+    const why = (m, reason) => { if (trace === m.san) opts.trace.reasons.push(reason); };
+    for (const m of uniqueMoves(legal)) {
+      const sq = squaresOfMove(m);
+      if (!sq.every(s => still(s) && changes[s] >= T)) {
+        why(m, 'not-ready ' + sq.map(s => s + ':' + Math.round(changes[s]) + '/' + Math.round(opts.stillMs[s])).join(' '));
+        continue;
+      }
+      const rank = m.color === 'w' ? '1' : '8';
+      const froms = [m.from], dests = [m.to];
+      if (m.flags.indexOf('k') >= 0) { froms.push('h' + rank); dests.push('f' + rank); }
+      if (m.flags.indexOf('q') >= 0) { froms.push('a' + rank); dests.push('d' + rank); }
+      // Фигуру сначала подняли, потом поставили (а не рука накрыла обе клетки разом).
+      const lifted = Math.max(...froms.map(s => opts.onset[s]));
+      if (!dests.every(s => opts.lastMotion[s] >= lifted + minCarry)) { why(m, 'carry'); continue; }
+      // Пятна изменений вокруг клеток хода должны целиком объясняться ходом:
+      // иначе это рука, лежащая или зависшая над этими клетками.
+      const explained = new Set(sq);
+      for (const q of sq) for (const o of (ctx.occ && ctx.occ[q]) || []) explained.add(o);
+      let clean = true;
+      for (const q of sq) {
+        for (const b of blob(q)) if (!explained.has(b)) { clean = false; break; }
+        if (!clean) break;
+      }
+      if (!clean) { why(m, 'blob'); continue; }
+      if (castlingPrefix(legal, m)) continue;
+      cands.push(candidate([m], changes, ctx));
+    }
+    if (!cands.length) return null;
+    cands.sort((a, b) => (better(a, b) ? -1 : 1));
+    const best = cands[0], second = cands[1];
+    // Неподвижные изменения вне хода: если их много — на доске лежит рука, ждём.
+    if (best.noise > (opts.maxOther != null ? opts.maxOther : 6)) { why(best.moves[0], 'noise ' + best.noise); return null; }
+    // Неоднозначно (два хода объясняют почти одинаково) — пусть решит полная проверка.
+    if (second && second.unexplained === best.unexplained && second.min >= best.min * 0.8 &&
+        !isCastle(best)) { why(best.moves[0], 'ambiguous vs ' + second.moves[0].san); return null; }
+    return best.moves[0];
+  }
+
   /* ---------- Детектор «рука над доской / доска успокоилась» ---------- */
 
   class MotionTracker {
@@ -518,6 +650,12 @@
       this.now = 0;
       this.noise = null;
       this.lastMotion = 0;
+      this.since = new Float64Array(64); // когда клетка двигалась последний раз
+    }
+
+    /** Сколько мс клетка неподвижна. */
+    cellStillMs(cell) {
+      return this.now - this.since[cell];
     }
 
     threshold() {
@@ -536,12 +674,15 @@
         this.prev = feat;
         this.stable = [feat];
         this.stableSince = t;
+        this.since.fill(t);
         return { motion: 0, moving: false, settled: null, threshold: this.threshold() };
       }
-      const motion = kthLargest(cellDiff(feat, this.prev), this.opts.rank);
+      const cells = cellDiff(feat, this.prev);
+      const motion = kthLargest(cells, this.opts.rank);
       this.prev = feat;
       this.lastMotion = motion;
       const thr = this.threshold();
+      for (let c = 0; c < 64; c++) if (cells[c] > thr) this.since[c] = t;
       if (motion > thr) {
         this.moving = true;
         this.stable = [];
@@ -579,7 +720,8 @@
     computeHomography, applyH, orderQuad, isConvexQuad,
     squareToCell, cellToSquare,
     samplePlan, sampleWithPlan, sampleBoard, averageFeatures, cellDiff, cellStats,
-    detectStartPosition, squareChanges, squaresOfMove, uniqueMoves, occlusionMap, findMove,
+    cloneFeatures, copyCells,
+    detectStartPosition, squareChanges, squaresOfMove, uniqueMoves, occlusionMap, findMove, findFastMove, scoreMoves,
     MotionTracker,
   };
 }));

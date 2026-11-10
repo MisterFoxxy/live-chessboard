@@ -13,7 +13,8 @@
 
   /* ---------- Константы и утилиты ---------- */
 
-  const TICK_MS = 100;
+  const TICK_MS = 33;      // ~30 кадров/с
+  const SETTLE_MS = 600;   // полная проверка, когда вся доска неподвижна
   const PROC_W = 640;
   const SAMPLE_OPTS = { samples: 8, margin: 0.12, dropNear: 0.3 };
   const DEFAULT_CORNERS = [[0.25, 0.06], [0.75, 0.06], [0.75, 0.94], [0.25, 0.94]];
@@ -85,7 +86,7 @@
   /* ---------- Настройки ---------- */
 
   const settings = Object.assign(
-    { threshold: 14, settleMs: 700, sound: true, heatmap: false },
+    { threshold: 14, fastMs: 120, sound: true, heatmap: false },
     store.get('vc_settings', {}));
   const saveSettings = () => store.set('vc_settings', settings);
 
@@ -96,9 +97,10 @@
   const camWrap = $('#camWrap');
   const proc = document.createElement('canvas');
   const pctx = proc.getContext('2d', { willReadFrequently: true });
-  const tracker = new BV.MotionTracker({ settleMs: settings.settleMs });
+  const tracker = new BV.MotionTracker({ settleMs: SETTLE_MS });
   const debugLog = [];
   const motionLog = [];
+  const moveLog = [];
 
   const S = {
     source: null,          // 'camera' | 'file'
@@ -120,7 +122,12 @@
     chess: new Chess(),
     times: [],
     startedAt: null,
-    ref: null,
+    ref: null,           // рабочий эталон (обновляется по клеткам при быстрой фиксации)
+    fullRef: null,       // эталон на момент последней полной проверки
+    basePly: 0,          // сколько полуходов было на момент fullRef
+    recent: new Set(),   // клетки недавних ходов: их эталон мог устареть
+    onset: {},           // клетка → когда начала отличаться от эталона
+    empty: { feat: null, known: new Set() }, // как выглядят пустые клетки (по номерам клеток кадра)
     changes: null,
     handOver: false,
     warn: null,
@@ -326,9 +333,11 @@
           recognize(tracker.steadyFeatures());
         }
       } else if (!S.ref) {
-        if (tracker.isSteady()) S.ref = tracker.steadyFeatures();
+        if (tracker.isSteady()) setBase(tracker.steadyFeatures());
       } else if (res.settled) {
         onSettled(res.settled);
+      } else {
+        fastCheck(feat);
       }
     }
     updateStatus();
@@ -351,7 +360,8 @@
 
   function goReady(feat) {
     S.phase = 'ready';
-    S.ref = feat || (tracker.isSteady() ? tracker.steadyFeatures() : null);
+    const base = feat || (tracker.isSteady() ? tracker.steadyFeatures() : null);
+    if (base) setBase(base); else S.ref = null;
     S.recognizedAt = performance.now();
     store.set('vc_k', S.k);
     feedback();
@@ -359,31 +369,179 @@
     updatePlayButton();
   }
 
-  function onSettled(feat) {
+  function ensureOcc() {
+    if (!S.occ || S.occK !== S.k) { S.occ = BV.occlusionMap(S.H, S.k); S.occK = S.k; }
+  }
+
+  /** Новый эталон: доска сейчас совпадает с позицией на цифровой доске. */
+  function setBase(feat) {
+    S.fullRef = BV.cloneFeatures(feat);
+    S.ref = BV.cloneFeatures(feat);
+    S.basePly = S.chess.history().length;
+    S.recent.clear();
+    S.onset = {};
+    // Запоминаем, как выглядят пустые клетки, — это помогает отличить «фигура ушла» от «пришла».
+    if (!S.empty.feat) S.empty.feat = { n: feat.n, per: feat.per, data: new Float32Array(feat.data.length), mean: feat.mean };
+    const cells = [];
+    for (const sq of BV.SQUARES) {
+      if (!S.chess.get(sq)) { const cell = BV.squareToCell(sq, S.k); cells.push(cell); S.empty.known.add(cell); }
+    }
+    BV.copyCells(S.empty.feat, feat, cells);
+  }
+
+  function resetEmpty() {
+    S.empty = { feat: null, known: new Set() };
+  }
+
+  /** Сколько клеток ходов не сходятся с ожидаемым «пусто/занято» после этих ходов. */
+  function occupancyMismatch(position, moves, emptyDiff) {
+    if (!emptyDiff) return 0;
+    const T = settings.threshold;
+    const touched = new Set();
+    for (const m of moves) for (const q of BV.squaresOfMove(m)) touched.add(q);
+    let bad = 0;
+    for (const q of touched) {
+      const cell = BV.squareToCell(q, S.k);
+      if (!S.empty.known.has(cell)) continue;
+      const d = emptyDiff[cell];
+      if (position.get(q) ? d < T * 0.8 : d > T * 1.5) bad++;
+    }
+    return bad;
+  }
+
+  function logMove(san, via) {
+    moveLog.push({ t: Math.round(video.currentTime * 100) / 100, san, via });
+    if (moveLog.length > 500) moveLog.shift();
+  }
+
+  /*
+   * Быстрая фиксация: на каждом кадре. Ход записывается, как только клетки
+   * «откуда» и «куда» изменились и замерли — рука может оставаться над доской.
+   */
+  function fastCheck(feat) {
+    const t = tracker.now;
+    const T = settings.threshold;
     const ch = BV.squareChanges(S.ref, feat, S.k);
     S.changes = ch;
-    if (!S.occ || S.occK !== S.k) { S.occ = BV.occlusionMap(S.H, S.k); S.occK = S.k; }
-    const r = BV.findMove(S.chess, ch.bySquare, { threshold: settings.threshold, occ: S.occ, allowDouble: true });
+    // Клетка «успокоилась», только если неподвижны и её соседи: однотонная рука
+    // или предплечье внутри выглядят неподвижными, но по краям всегда движутся.
+    const nbSince = new Float64Array(64);
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        let m = -Infinity;
+        for (let dr = -1; dr <= 1; dr++) {
+          for (let dc = -1; dc <= 1; dc++) {
+            const rr = r + dr, cc = c + dc;
+            if (rr >= 0 && rr < 8 && cc >= 0 && cc < 8) m = Math.max(m, tracker.since[rr * 8 + cc]);
+          }
+        }
+        nbSince[r * 8 + c] = m;
+      }
+    }
+    const stillMs = {}, lastMotion = {}, onset = {};
+    for (const sq of BV.SQUARES) {
+      const cell = BV.squareToCell(sq, S.k);
+      stillMs[sq] = t - nbSince[cell];
+      lastMotion[sq] = tracker.since[cell];
+      const v = ch.bySquare[sq];
+      if (v >= T) { if (S.onset[sq] == null) S.onset[sq] = t; } else if (v < T * 0.7) delete S.onset[sq];
+      onset[sq] = S.onset[sq] != null ? S.onset[sq] : t;
+    }
+    ensureOcc();
+    const m = BV.findFastMove(S.chess, ch.bySquare, {
+      threshold: T, occ: S.occ, stillMs, lastMotion, onset, fastMs: settings.fastMs, ignore: S.recent,
+      trace: window.vcTrace,
+    });
+    if (!m) return;
+    const played = applyMove({ from: m.from, to: m.to, promotion: m.promotion }, 'fast');
+    if (!played) return;
+    // Эталон обновляем только на клетках хода и тех клетках в их «тени», что уже неподвижны.
+    const moveSq = BV.squaresOfMove(played);
+    const touched = new Set(moveSq);
+    for (const sq of moveSq) for (const o of S.occ[sq] || []) touched.add(o);
+    const cells = [];
+    for (const sq of touched) {
+      if (moveSq.indexOf(sq) >= 0 || stillMs[sq] >= settings.fastMs) cells.push(BV.squareToCell(sq, S.k));
+      S.recent.add(sq);
+      delete S.onset[sq];
+    }
+    BV.copyCells(S.ref, feat, cells);
+    S.warn = null;
+  }
+
+  function undoPlies(n) {
+    for (let i = 0; i < n; i++) {
+      const m = S.chess.undo();
+      if (m) { S.times.pop(); logMove(m.san, 'undo'); }
+    }
+  }
+
+  /*
+   * Полная проверка: вся доска неподвижна. Сравниваем с эталоном прошлой проверки
+   * и сверяем с быстро записанными ходами: подтверждаем, исправляем или отменяем.
+   */
+  function onSettled(feat) {
+    ensureOcc();
+    const hist = S.chess.history({ verbose: true });
+    const fast = hist.slice(S.basePly);
+    const base = new Chess();
+    for (const m of hist.slice(0, S.basePly)) base.move(m.san);
+    const ch = BV.squareChanges(S.fullRef, feat, S.k);
+    S.changes = ch;
+    const T = settings.threshold;
+    const r = BV.findMove(base, ch.bySquare, { threshold: T, occ: S.occ, allowDouble: true });
     debugLog.push({
       t: Math.round(video.currentTime * 10) / 10, type: r.type,
-      moves: r.moves ? r.moves.map(m => m.san) : [],
-      top: Object.entries(ch.bySquare).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([s, v]) => s + ':' + v.toFixed(0)),
+      moves: r.moves ? r.moves.map(m => m.san) : [], fast: fast.map(m => m.san),
+      top: Object.entries(ch.bySquare).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([q, v]) => q + ':' + v.toFixed(0)),
     });
     if (debugLog.length > 300) debugLog.shift();
-    if (r.type === 'move') {
-      let ok = true;
-      for (const m of r.moves) {
-        if (!applyMove({ from: m.from, to: m.to, promotion: m.promotion }, 'camera')) { ok = false; break; }
+    const same = (a, b) => a.length === b.length && a.every((m, i) => m.from === b[i].from && m.to === b[i].to);
+
+    // Быстро записанные ходы — гипотеза: оставляем их, если их клетки действительно
+    // изменились и они объясняют картину не хуже, чем результат проверки.
+    const opts = { threshold: T, occ: S.occ };
+    const fs = fast.length ? BV.scoreMoves(fast, ch.bySquare, opts) : null;
+    const rs = r.type === 'move' ? BV.scoreMoves(r.moves, ch.bySquare, opts) : null;
+    let fastBetter = true;
+    if (rs) {
+      const emptyDiff = S.empty.feat ? BV.cellDiff(feat, S.empty.feat) : null;
+      const posR = new Chess(base.fen());
+      for (const m of r.moves) posR.move({ from: m.from, to: m.to, promotion: m.promotion });
+      const fi = occupancyMismatch(S.chess, fast, emptyDiff), ri = occupancyMismatch(posR, r.moves, emptyDiff);
+      fastBetter = fi < ri || (fi === ri && fs && fs.unexplained <= rs.unexplained);
+    }
+    const fastOk = fs && fs.fits && fs.unexplained <= 1 && fs.noise <= 3 && fastBetter;
+
+    if (fastOk) {
+      setBase(feat);
+      S.warn = null;
+    } else if (r.type === 'move') {
+      if (!same(r.moves, fast)) {
+        if (!fast.length) {
+          for (const m of r.moves) applyMove({ from: m.from, to: m.to, promotion: m.promotion }, 'camera');
+          if (r.double) toast('Записаны два хода подряд');
+        } else {
+          undoPlies(fast.length);
+          for (const m of r.moves) applyMove({ from: m.from, to: m.to, promotion: m.promotion }, 'fix');
+          toast('Ход исправлен: ' + S.chess.history().slice(-r.moves.length).join(' '));
+        }
       }
-      if (ok) {
-        S.ref = feat;
-        S.warn = null;
-        if (r.double) toast('Записаны два хода подряд');
-      }
+      setBase(feat);
+      S.warn = null;
     } else if (r.type === 'none') {
-      // Фигуры не двигались (или их чуть поправили) — обновим эталон, чтобы не копить дрейф освещения.
-      if (ch.max < settings.threshold * 0.6) S.ref = feat;
-    } else if (r.changed.length > 1) {
+      if (fast.length) {
+        undoPlies(fast.length);
+        S.lastMove = [];
+        renderBoard(); renderMoves(); autosave();
+        toast('Ложный ход отменён');
+        setBase(feat);
+      } else if (ch.max < T * 0.6) {
+        setBase(feat); // фигуры не двигались — обновим эталон, чтобы не копить дрейф освещения
+      }
+    } else if (fast.length > 2) {
+      setBase(feat); // слишком длинная цепочка, чтобы перепроверить: принимаем как есть
+    } else if (!fast.length && r.changed.length > 1) {
       // Одна изменившаяся клетка — скорее всего, фигуру ещё держат в руке: просто ждём.
       S.warn = {
         text: 'Не понял ход. Поправьте фигуры или сделайте ход на цифровой доске.',
@@ -404,6 +562,7 @@
     if (!S.startedAt) S.startedAt = Date.now();
     S.times.push(Date.now());
     S.lastMove = [played.from, played.to];
+    logMove(played.san, source);
     S.selected = null;
     if (source === 'manual') S.ref = null; // эталон снимем заново, когда доска успокоится
     feedback();
@@ -526,7 +685,7 @@
         return ['ok', 'Доска распознана — ждём первого хода.'];
       case 'recording':
         if (S.source === 'file' && video.ended) return ['ok', 'Видео закончилось. Проверьте ходы и нажмите «Закончить партию».'];
-        return ['rec', 'Идёт запись. Ход засчитывается, когда рука ушла с доски.'];
+        return ['rec', 'Идёт запись. Ход засчитывается, как только вы отпустили фигуру.'];
       default:
         return ['', ''];
     }
@@ -710,6 +869,7 @@
     store.set('vc_corners', S.corners);
     S.H = null;
     S.ref = null;
+    resetEmpty();
     S.changes = null;
     tracker.reset();
     if (S.phase === 'ready') { S.phase = 'setup'; S.recogStreak = 0; }
@@ -793,6 +953,8 @@
     S.recogStreak = 0;
     S.recognizedAt = 0;
     S.ref = null;
+    S.fullRef = null;
+    resetEmpty();
     S.changes = null;
     S.H = null;
     S.kManual = false;
@@ -999,6 +1161,8 @@
     $('#btnRotate').addEventListener('click', () => {
       S.k = (S.k + 1) & 3;
       S.kManual = true;
+      resetEmpty();
+      S.ref = null;
       store.set('vc_k', S.k);
       drawOverlay();
       toast('Белые: ' + ['снизу', 'слева', 'сверху', 'справа'][S.k]);
@@ -1029,7 +1193,7 @@
     $('#btnUndo').addEventListener('click', undoMove);
     $('#btnFlip').addEventListener('click', () => { S.flipped = !S.flipped; renderBoard(); });
     $('#btnRebase').addEventListener('click', () => {
-      S.ref = tracker.isSteady() ? tracker.steadyFeatures() : null;
+      if (tracker.isSteady()) setBase(tracker.steadyFeatures()); else S.ref = null;
       S.warn = null;
       toast('Принято: фигуры на доске совпадают с цифровой доской');
     });
@@ -1052,20 +1216,19 @@
     $('#btnShare').addEventListener('click', () => share($('#pgnOut').value));
 
     // Настройки распознавания.
-    const th = $('#setThreshold'), st = $('#setSettle');
+    const th = $('#setThreshold'), st = $('#setFast');
     const showVals = () => {
       $('#valThreshold').textContent = settings.threshold;
-      $('#valSettle').textContent = (settings.settleMs / 1000).toFixed(1) + ' с';
+      $('#valFast').textContent = (settings.fastMs / 1000).toFixed(2) + ' с';
     };
     th.value = settings.threshold;
-    st.value = settings.settleMs;
+    st.value = settings.fastMs;
     $('#setSound').checked = settings.sound;
     $('#setHeatmap').checked = settings.heatmap;
     showVals();
     th.addEventListener('input', () => { settings.threshold = +th.value; showVals(); saveSettings(); });
     st.addEventListener('input', () => {
-      settings.settleMs = +st.value;
-      tracker.opts.settleMs = settings.settleMs;
+      settings.fastMs = +st.value;
       showVals();
       saveSettings();
     });
@@ -1106,5 +1269,6 @@
     phase: () => S.phase,
     log: debugLog,
     motionLog,
+    moves: moveLog,
   };
 })();
