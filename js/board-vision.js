@@ -878,6 +878,7 @@
    * opts: threshold, occ, maxPlies, maxNodes,
    *       active — Set клеток, которые менялись с момента проверки (ходы ищем только по ним),
    *       order — {клетка: когда на ней впервые что-то замерло} (для порядка ходов),
+   *       events — {клетка: [моменты, когда она замирала в новом виде]} (точнее для порядка),
    *       recorded — SAN уже записанных ходов (при равенстве оставляем их),
    *       colorOf(square) → 'b' (видна чёрная фигура) | 'n' (чёрной нет) | null,
    *       mask — Set клеток, закрытых рукой (их не оцениваем).
@@ -898,6 +899,21 @@
     const strong = SQUARES.filter(q => !mask.has(q) && (changes[q] || 0) >= T * 1.6);
     const changed = SQUARES.filter(q => !mask.has(q) && (changes[q] || 0) >= T);
     const recordedKey = (opts.recorded || []).join(' ');
+    const events = opts.events || null;
+    const timesOf = seq => {
+      const touched = {}, out = [];
+      for (const m of seq) {
+        let t = null;
+        if (events) {
+          const ev = events[m.to], k = touched[m.to] || 0;
+          if (ev && ev.length) t = ev[Math.min(k, ev.length - 1)];
+        }
+        if (t == null) { const a = order[m.to], b = order[m.from]; t = a != null ? a : b != null ? b : null; }
+        out.push(t);
+        for (const q of squaresOfMove(m)) touched[q] = (touched[q] || 0) + 1;
+      }
+      return out;
+    };
     const occBy = {}; // клетка → с каких клеток на неё наклоняется фигура
     for (const o of Object.keys(occ)) for (const q of occ[o] || []) (occBy[q] = occBy[q] || []).push(o);
 
@@ -935,15 +951,13 @@
         if (v < T) missing++; else if (v < T * 2) weak++;
         if (v < min) min = v;
       }
-      // Порядок: ход сделан не раньше, чем на его клетках что-то замерло.
+      // Порядок ходов: k-й раз, когда цепочка трогает клетку, должен совпасть с k-м разом,
+      // когда клетка (без руки рядом) замерла в новом виде (opts.events); иначе — первое изменение.
       let inv = 0;
-      const when = m => {
-        const a = order[m.to], b = order[m.from];
-        return a != null ? a : b != null ? b : null;
-      };
+      const times = timesOf(seq);
       for (let i = 0; i < seq.length; i++) {
         for (let j = i + 1; j < seq.length; j++) {
-          const a = when(seq[i]), b = when(seq[j]);
+          const a = times[i], b = times[j];
           if (a != null && b != null && a > b + 300) inv++;
         }
       }
@@ -1156,11 +1170,11 @@
     // Те же ходы, но в порядке, в каком менялись их клетки (лучом порядок теряется):
     // на каждом шаге берём самый ранний возможный ход нужного цвета.
     if (best && best.plies > 1 && best.inv > 0) {
-      const when = m => { const a = order[m.to], b = order[m.from]; return a != null ? a : b != null ? b : Infinity; };
       const left = best.moves.slice();
       const line = [];
       while (left.length) {
         const turn = chess.turn();
+        const when = m => { const t = timesOf(line.concat([m])); const x = t[t.length - 1]; return x == null ? Infinity : x; };
         const cand = left.filter(m => m.color === turn).sort((a, b) => when(a) - when(b));
         let done = null;
         for (const m of cand) {

@@ -140,6 +140,8 @@
     onset: {},           // клетка → когда начала отличаться от эталона
     firstChange: {},     // клетка → когда на ней впервые что-то замерло после проверки (порядок ходов)
     quietAt: -1,         // какую паузу уже проверили
+    settled: null,       // как выглядела каждая клетка, когда в последний раз замирала
+    events: {},          // клетка → моменты, когда она замирала в новом виде (рядом без руки)
     darkCal: null,       // порог «чёрная фигура» по тёмному уровню клетки
     pending: new Set(),  // клетки, чей эталон устарел (менялись под рукой) — переснимаем, когда видны
     empty: { feat: null, known: new Set() }, // как выглядят пустые клетки (по номерам клеток кадра)
@@ -471,6 +473,8 @@
     S.recent.clear();
     S.onset = {};
     S.firstChange = {};
+    S.settled = BV.cloneFeatures(feat);
+    S.events = {};
     // По проверенной позиции подбираем порог «на клетке чёрная фигура».
     // Клетки под рукой (hidden): их эталон устарел — переснимем, когда рука уйдёт.
     S.pending = new Set(hidden);
@@ -601,7 +605,7 @@
       onset[sq] = S.onset[sq] != null ? S.onset[sq] : t;
     }
     ensureOcc();
-    trackFirstChange(feat, t);
+    trackFirstChange(feat, t, stillMs);
     if (quietCheck(feat, t)) return;
     if (revertInTransit(feat, t, stillMs)) return;
     refineRef(feat, ch, t, stillMs, lastMotion);
@@ -650,7 +654,7 @@
   }
 
   /** Когда на клетке впервые что-то замерло после последней проверки (для порядка ходов). */
-  function trackFirstChange(feat, t) {
+  function trackFirstChange(feat, t, stillMs) {
     const T = settings.threshold;
     const ch = BV.squareChanges(S.fullRef, feat, S.k).bySquare;
     for (const sq of BV.SQUARES) {
@@ -658,6 +662,17 @@
       const since = tracker.since[BV.squareToCell(sq, S.k)];
       if (t - since >= 150) S.firstChange[sq] = since;
     }
+    // История клетки: каждый раз, когда она замерла в новом виде, а рядом нет движения.
+    if (!S.settled) return;
+    const cs = BV.squareChanges(S.settled, feat, S.k).bySquare;
+    const cells = [];
+    for (const sq of BV.SQUARES) {
+      if (cs[sq] < T || stillMs[sq] < 150) continue;
+      const cell = BV.squareToCell(sq, S.k);
+      (S.events[sq] = S.events[sq] || []).push(tracker.since[cell]);
+      cells.push(cell);
+    }
+    if (cells.length) BV.copyCells(S.settled, feat, cells);
   }
 
   /*
@@ -717,7 +732,7 @@
     } : null;
     const t0 = performance.now();
     const r = BV.findSequence(base, ch, {
-      threshold: T, occ: S.occ, active, order: S.firstChange, colorOf, mask,
+      threshold: T, occ: S.occ, active, order: S.firstChange, events: S.events, colorOf, mask,
       recorded: recorded.map(m => m.san), maxPlies: 8, maxNodes: 2000,
       probe: window.vcExpected ? [window.vcExpected.slice(S.basePly, S.basePly + Math.max(1, recorded.length, 0) + 0),
         window.vcExpected.slice(S.basePly, S.basePly + 5)] : null,
@@ -737,13 +752,16 @@
       const code = (pos, q) => { const p = pos.get(q); return p ? p.color + p.type : ''; };
       ambiguous = BV.SQUARES.some(q => mask.has(q) && code(pa, q) !== code(pb, q));
     }
-    const clean = !ambiguous && b.unexplained === 0 && b.missing === 0 && b.conflict === 0 && b.noise <= 2 + b.bumped && b.bumped <= 2;
+    // Мелкий шум допустим, и тем больше, чем больше клеток изменили ходы (тени, наклоны).
+    const clean = !ambiguous && b.unexplained === 0 && b.missing === 0 && b.conflict === 0 &&
+      b.noise <= 2 + b.bumped + Math.floor(b.req.length / 4) && b.bumped <= 2;
     if (!clean) return false;
     // Исправляем, если найденное заметно лучше; или те же ходы в другом порядке — и порядок
     // лучше сходится с тем, когда менялись клетки.
     const rec = r.recorded;
     const reorder = !!rec && !b.isRecorded && rec.fen === b.fen && b.inv < rec.inv && b.cost <= rec.cost + 0.5;
-    const fix = !b.isRecorded && (!rec || rec.cost > b.cost + 1 || reorder);
+    // Новые ходы добавляем только по явным изменениям: слабые (сдвинули телефон, тень) не в счёт.
+    const fix = !b.isRecorded && (!rec || rec.cost > b.cost + 1 || reorder) && (b.weak === 0 || reorder);
     if (!fix && !b.isRecorded) return false;
     if (fix) {
       debugLog.push({
