@@ -15,7 +15,7 @@
 
   /* ---------- Константы и утилиты ---------- */
 
-  const APP_VERSION = '6 · автопоиск доски, камера сверху, отладочное видео';
+  const APP_VERSION = '7 · быстрая игра одной рукой, чёрные фигуры на тёмных клетках';
   const TICK_MS = 33;      // ~30 кадров/с
   const SETTLE_MS = 600;   // полная проверка, когда вся доска неподвижна
   const PROC_W = 640;
@@ -105,6 +105,7 @@
   const debugLog = [];
   const motionLog = [];
   const moveLog = [];
+  const quietLog = []; // решения проверки в паузах (для отладочного журнала)
 
   const S = {
     source: null,          // 'camera' | 'file'
@@ -749,6 +750,12 @@
     });
     const b = r.best;
     if (!b) return false;
+    const qe = {
+      t: Math.round(video.currentTime * 100) / 100, mask: mask.size, best: b.san.join(' '), cost: b.cost,
+      u: b.unexplained, m: b.missing, c: b.conflict, n: b.noise,
+      rec: r.recorded ? r.recorded.cost : null, alt: r.alt ? r.alt.cost : null, act: '-',
+    };
+    if (recorded.length || b.plies || b.unexplained) { quietLog.push(qe); if (quietLog.length > 300) quietLog.shift(); }
     if (window.vcQuietTrace) {
       const f = c => c ? `${c.san.join(' ')} [u${c.unexplained} b${c.bumped} i${c.indirect} v${c.unverified} m${c.missing} w${c.weak} c${c.conflict}${c.conflictAt.length ? '(' + c.conflictAt.join(',') + ')' : ''} n${c.noise}(${c.noiseAt.join(',')}) inv${c.inv} cost${c.cost}]` : '-';
       window.vcQuietTrace.push(`${video.currentTime.toFixed(2)} mask ${Array.from(mask).join(',') || '-'} best ${f(b)} alt ${f(r.alt)} rec ${f(r.recorded)} ${(r.probes || []).map(p => 'probe ' + f(p)).join(' ')} nodes ${r.nodes} ${Math.round(performance.now() - t0)}ms top ` +
@@ -773,6 +780,7 @@
     // Новые ходы добавляем только по явным изменениям: слабые (сдвинули телефон, тень) не в счёт.
     const fix = !b.isRecorded && (!rec || rec.cost > b.cost + 1 || reorder) && (b.weak === 0 || reorder);
     if (!fix && !b.isRecorded) return false;
+    qe.act = fix ? 'fix' : 'ok';
     if (fix) {
       debugLog.push({
         t: Math.round(video.currentTime * 10) / 10, type: 'recover', moves: b.san, fast: recorded.map(m => m.san),
@@ -792,6 +800,7 @@
     // Тогда точку отсчёта не двигаем — иначе этот ход «растворится» в эталоне.
     const left = new Set(b.noiseAt);
     if (S.chess.moves({ verbose: true }).some(m => BV.squaresOfMove(m).every(q => left.has(q)))) {
+      qe.act += '/wait';
       if (fix) {
         // эталон быстрой фиксации — по клеткам исправленных ходов
         const cells = new Set();
@@ -1595,8 +1604,9 @@
     return JSON.stringify({
       app: 'live-chessboard/record', createdAt: new Date().toISOString(), ua: navigator.userAgent,
       video: { width: video.videoWidth || null, height: video.videoHeight || null, recordStartT: S.debug ? S.debug.videoT0 : null, type: S.debug ? S.debug.type : null },
-      corners: S.corners, k: S.k, settings, headers: S.headers,
-      moves: moveLog, settles: debugLog, history: S.chess.history(), pgn: $('#pgnOut').value,
+      version: APP_VERSION, corners: S.corners, k: S.k, settings, headers: S.headers,
+      camera: S.cam ? { tilt: Math.round(S.cam.tilt * 10) / 10, diff: BV.diffOpts.mode } : null,
+      moves: moveLog, settles: debugLog, quiet: quietLog, history: S.chess.history(), pgn: $('#pgnOut').value,
     }, null, 1);
   }
 
