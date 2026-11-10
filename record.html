@@ -100,7 +100,7 @@
       <div class="cam-tools">
         <button id="btnPlay" class="chip" hidden>▶ Запустить видео</button>
         <button id="btnRotate" class="chip">↻ Повернуть</button>
-        <button id="btnResetCorners" class="chip">Сбросить углы</button>
+        <button id="btnAutoFind" class="chip">⌖ Найти доску</button>
         <button id="btnForceStart" class="chip">Начать без проверки</button>
       </div>
 
@@ -108,8 +108,8 @@
         <div class="section-label">Как начать запись</div>
         <ol>
           <li>Поставьте телефон на штатив так, чтобы вся доска попадала в кадр и была как можно крупнее. Лучше сбоку от доски и повыше, а не за спиной игрока: так рука после хода не закрывает фигуру от камеры.</li>
-          <li>Перетащите 4 жёлтые точки на углы игрового поля (без рамки с буквами и цифрами).</li>
-          <li>Расставьте фигуры в начальную позицию и дождитесь зелёной сетки — значит, доска распознана.</li>
+          <li>Расставьте фигуры в начальную позицию — программа сама найдёт доску и поставит сетку. Если сетка легла неточно, перетащите жёлтые точки на углы игрового поля (без рамки с буквами).</li>
+          <li>Дождитесь зелёной сетки — значит, доска распознана.</li>
           <li>Запись начнётся сама с первым ходом. Ход засчитывается, как только вы отпустили фигуру и рука открыла клетку, — убирать руку с доски не нужно.</li>
         </ol>
       </div>
@@ -195,6 +195,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js" crossorigin="anonymous"></script>
 <script src="js/board-vision.js"></script>
+<script src="js/board-detect.js"></script>
 <script src="js/square-ai.js"></script>
 <script src="js/record.js"></script>
 </body>
