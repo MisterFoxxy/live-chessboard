@@ -88,7 +88,7 @@
   /* ---------- Настройки ---------- */
 
   const settings = Object.assign(
-    { threshold: 14, fastMs: 120, sound: true, heatmap: false, ai: true },
+    { threshold: 14, fastMs: 120, sound: true, heatmap: false, ai: true, saveVideo: true },
     store.get('vc_settings', {}));
   const saveSettings = () => store.set('vc_settings', settings);
 
@@ -244,6 +244,42 @@
     video.autoplay = true;
     video.srcObject = stream;
     await video.play().catch(() => {});
+    startDebugRecording(stream);
+  }
+
+  /*
+   * Видео партии для отладки: пишем поток камеры (MediaRecorder). После партии его можно
+   * отправить вместе с журналом решений программы и воспроизвести распознавание кадр за кадром.
+   */
+  const DEBUG_MAX_BYTES = 300 * 1024 * 1024;
+  function startDebugRecording(stream) {
+    S.debug = null;
+    if (!settings.saveVideo || typeof MediaRecorder === 'undefined') return;
+    const type = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4']
+      .find(t => { try { return MediaRecorder.isTypeSupported(t); } catch (e) { return false; } });
+    let rec;
+    try {
+      rec = new MediaRecorder(stream, Object.assign({ videoBitsPerSecond: 1500000 }, type ? { mimeType: type } : {}));
+    } catch (e) { return; }
+    const D = { rec, chunks: [], bytes: 0, type: rec.mimeType || type || 'video/webm', videoT0: video.currentTime, startedAt: Date.now(), blob: null };
+    rec.ondataavailable = e => {
+      if (!e.data || !e.data.size) return;
+      D.chunks.push(e.data);
+      D.bytes += e.data.size;
+      if (D.bytes > DEBUG_MAX_BYTES && rec.state === 'recording') rec.stop(); // не забиваем память телефона
+    };
+    rec.onstop = () => {
+      D.blob = new Blob(D.chunks, { type: D.type });
+      D.chunks = [];
+      updateDebugCard();
+    };
+    try { rec.start(2000); } catch (e) { return; }
+    S.debug = D;
+  }
+
+  function stopDebugRecording() {
+    const D = S.debug;
+    if (D && D.rec && D.rec.state !== 'inactive') { try { D.rec.stop(); } catch (e) { /* ignore */ } }
   }
 
   function startFile(url) {
@@ -259,6 +295,7 @@
   }
 
   function stopMedia() {
+    stopDebugRecording();
     clearInterval(S.timer);
     S.timer = null;
     if (S.stream) S.stream.getTracks().forEach(t => t.stop());
@@ -1116,6 +1153,7 @@
     S.recog = null;
     S.recogStreak = 0;
     S.recognizedAt = 0;
+    S.debug = null;
     S.autoDetect = !resume;
     S.autoShown = false;
     S.lastAutoAt = 0;
@@ -1229,6 +1267,7 @@
     $('#sumScore').textContent = result === '1/2-1/2' ? '½ – ½' : result.replace('-', ' – ');
     $('#sumMeta').textContent = `${h.event || 'Партия'} · полуходов: ${S.chess.history().length}`;
     $('#pgnOut').value = pgn;
+    updateDebugCard();
     showScreen('screenResult');
   }
 
@@ -1244,6 +1283,58 @@
   }).join('');
 
   // Имя файла латиницей: некоторые браузеры заменяют кириллическое имя на «download».
+  /** Журнал для отладки: где была доска, настройки и все решения программы со временем. */
+  function debugLogJson() {
+    return JSON.stringify({
+      app: 'live-chessboard/record', createdAt: new Date().toISOString(), ua: navigator.userAgent,
+      video: { width: video.videoWidth || null, height: video.videoHeight || null, recordStartT: S.debug ? S.debug.videoT0 : null, type: S.debug ? S.debug.type : null },
+      corners: S.corners, k: S.k, settings, headers: S.headers,
+      moves: moveLog, settles: debugLog, history: S.chess.history(), pgn: $('#pgnOut').value,
+    }, null, 1);
+  }
+
+  function debugBaseName() {
+    const d = new Date(S.debug ? S.debug.startedAt : Date.now());
+    const p = n => String(n).padStart(2, '0');
+    return `game-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+  }
+
+  function debugVideoFile() {
+    const D = S.debug;
+    if (!D || !D.blob) return null;
+    const ext = /mp4/.test(D.type) ? 'mp4' : 'webm';
+    return new File([D.blob], debugBaseName() + '.' + ext, { type: D.blob.type || D.type });
+  }
+
+  function debugLogFile() {
+    return new File([debugLogJson()], debugBaseName() + '-log.json', { type: 'application/json' });
+  }
+
+  function saveFile(file) {
+    const url = URL.createObjectURL(file);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = file.name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }
+
+  function updateDebugCard() {
+    const D = S.debug;
+    const card = $('#debugCard');
+    if (!card) return;
+    card.hidden = !D;
+    if (!D) return;
+    const ready = !!D.blob;
+    $('#btnSendDebug').disabled = !ready;
+    $('#btnDebugVideo').disabled = !ready;
+    $('#debugInfo').textContent = ready
+      ? `Видео: ${(D.blob.size / 1048576).toFixed(1)} МБ` + (D.bytes > DEBUG_MAX_BYTES ? ' (записано только начало партии)' : '')
+      : 'Готовлю видео…';
+  }
+
   function fileName(pgn) {
     const tag = n => (pgn.match(new RegExp('\\[' + n + ' "([^"]*)"\\]')) || [])[1] || '';
     const base = translit(`${tag('White')}-${tag('Black')}-${tag('Date')}`)
@@ -1388,6 +1479,22 @@
     $('#btnDownload').addEventListener('click', () => download($('#pgnOut').value));
     $('#btnCopy').addEventListener('click', () => copy($('#pgnOut').value));
     $('#btnShare').addEventListener('click', () => share($('#pgnOut').value));
+    $('#btnDebugVideo').addEventListener('click', () => { const f = debugVideoFile(); if (f) saveFile(f); });
+    $('#btnDebugLog').addEventListener('click', () => saveFile(debugLogFile()));
+    $('#btnSendDebug').addEventListener('click', async () => {
+      const files = [debugVideoFile(), debugLogFile()].filter(Boolean);
+      try {
+        if (navigator.canShare && navigator.canShare({ files })) {
+          await navigator.share({ files, title: 'Партия: видео и журнал' });
+          return;
+        }
+      } catch (e) {
+        if (e && e.name === 'AbortError') return;
+      }
+      files.forEach(saveFile); // поделиться файлами нельзя — просто скачиваем
+    });
+    $('#setSaveVideo').checked = settings.saveVideo;
+    $('#setSaveVideo').addEventListener('change', e => { settings.saveVideo = e.target.checked; saveSettings(); });
 
     // Настройки распознавания.
     const th = $('#setThreshold'), st = $('#setFast');
@@ -1440,7 +1547,7 @@
   // Доступ для отладки из консоли.
   window.vcDebug = {
     state: S, settings, tracker,
-    setCorners(c) { if (validCorners(c)) { S.corners = c.map(p => p.slice()); cornersChanged(); } },
+    setCorners(c) { if (validCorners(c)) { S.autoDetect = false; S.corners = c.map(p => p.slice()); cornersChanged(); } },
     history: () => S.chess.history(),
     phase: () => S.phase,
     log: debugLog,
