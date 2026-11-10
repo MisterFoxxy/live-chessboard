@@ -7,7 +7,8 @@
 
   const BV = window.BoardVision;
   const AI = window.SquareAI;
-  if (typeof Chess === 'undefined' || !BV || !AI) {
+  const BD = window.BoardDetect;
+  if (typeof Chess === 'undefined' || !BV || !AI || !BD) {
     document.body.innerHTML = '<p style="padding:24px;color:#fff">Не удалось загрузить скрипты. Проверьте интернет и обновите страницу.</p>';
     return;
   }
@@ -116,6 +117,10 @@
     occ: null,
     occK: -1,
     badQuad: false,
+    autoDetect: true,    // искать доску автоматически
+    autoShown: false,
+    lastAutoAt: 0,
+    lastImg: null,
     tickMs: 0,
     recog: null,
     recogStreak: 0,
@@ -287,6 +292,13 @@
     const scale = Math.min(1, PROC_W / video.videoWidth);
     const w = Math.round(video.videoWidth * scale), h = Math.round(video.videoHeight * scale);
     if (proc.width !== w || proc.height !== h) { proc.width = w; proc.height = h; S.H = null; }
+    pctx.drawImage(video, 0, 0, w, h);
+    let img;
+    try { img = pctx.getImageData(0, 0, w, h); } catch (e) {
+      S.error = 'Браузер не даёт читать кадры этого видео.';
+      return null;
+    }
+    S.lastImg = img; // для автопоиска доски
     if (!S.H) {
       const q = BV.orderQuad(S.corners);
       S.badQuad = !BV.isConvexQuad(q);
@@ -295,12 +307,6 @@
       if (!S.H) return null;
       S.plan = BV.samplePlan(S.H, SAMPLE_OPTS);
       S.occ = null;
-    }
-    pctx.drawImage(video, 0, 0, w, h);
-    let img;
-    try { img = pctx.getImageData(0, 0, w, h); } catch (e) {
-      S.error = 'Браузер не даёт читать кадры этого видео.';
-      return null;
     }
     return BV.sampleWithPlan(img, S.plan);
   }
@@ -326,6 +332,7 @@
     if (S.phase === 'idle' || S.phase === 'finished') return;
     const t0 = performance.now();
     const feat = grab();
+    if (S.phase === 'setup') autoFind(t0);
     if (feat) {
       const res = tracker.push(feat, clock());
       S.handOver = res.moving;
@@ -354,6 +361,32 @@
   function startLoop() {
     clearInterval(S.timer);
     S.timer = setInterval(tick, TICK_MS);
+  }
+
+  /*
+   * Автопоиск доски: пока идёт настройка и кадр спокоен, примерно раз в секунду ищем
+   * доску в начальной позиции. Нашли — ставим углы сами; сетка станет зелёной, когда
+   * начальная расстановка подтвердится. Если пользователь тронул точки вручную — не мешаем.
+   */
+  function autoFind(now) {
+    if (!S.autoDetect || !S.lastImg || S.drag || tracker.moving || now - S.lastAutoAt < 900) return;
+    S.lastAutoAt = now;
+    let r = null;
+    try { r = BD.detect(S.lastImg); } catch (e) { r = null; }
+    if (!r) return;
+    if (r.recognized) {
+      S.corners = r.corners.map(p => p.slice());
+      S.k = r.k;
+      S.kManual = false;
+      S.autoDetect = false; // нашли — дальше подтвердит распознавание начальной позиции
+      cornersChanged();
+      toast('Доска найдена');
+    } else if (!S.autoShown) {
+      // Сетку нашли, но начальной расстановки не видно: покажем, где доска, и продолжим искать.
+      S.autoShown = true;
+      S.corners = r.corners.map(p => p.slice());
+      cornersChanged();
+    }
   }
 
   function recognize(feat) {
@@ -774,6 +807,7 @@
     switch (S.phase) {
       case 'setup':
         if (video.readyState < 2) return ['search', S.source === 'file' ? 'Открываю видео…' : 'Включаю камеру…'];
+        if (S.autoDetect) return ['search', 'Ищу доску… Наведите камеру так, чтобы вся доска в начальной позиции была в кадре.'];
         if (S.badQuad) return ['err', 'Углы заданы неверно — поставьте точки на 4 угла доски.'];
         if (!S.recog) return ['search', 'Ищу доску…'];
         return ['search', 'Ищу начальную расстановку… Проверьте углы и фигуры. Если игра уже идёт — «Начать без проверки».'];
@@ -834,6 +868,17 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
     if (S.phase === 'idle') return;
+    if (S.phase === 'setup' && S.autoDetect && !S.autoShown) {
+      // Доска ещё не найдена — только крутилка «ищу доску».
+      const R = Math.max(14, Math.min(w, h) * 0.07), t = performance.now() / 600;
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = Math.max(3, R / 4);
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.arc(w / 2, h / 2, R, t, t + Math.PI * 1.5);
+      ctx.stroke();
+      return;
+    }
 
     const q = BV.orderQuad(S.corners).map(p => [p[0] * w, p[1] * h]);
     const Hd = BV.isConvexQuad(q) ? BV.computeHomography(BV.UNIT, q) : null;
@@ -1011,6 +1056,7 @@
     });
     if (best < 0) return;
     S.drag = { i: best, id: e.pointerId };
+    S.autoDetect = false; // углы правят вручную — автопоиск больше не вмешивается
     camWrap.setPointerCapture(e.pointerId);
     e.preventDefault();
     drawOverlay();
@@ -1070,6 +1116,10 @@
     S.recog = null;
     S.recogStreak = 0;
     S.recognizedAt = 0;
+    S.autoDetect = !resume;
+    S.autoShown = false;
+    S.lastAutoAt = 0;
+    S.lastImg = null;
     S.ref = null;
     S.fullRef = null;
     resetEmpty();
@@ -1287,9 +1337,13 @@
       drawOverlay();
       toast('Белые: ' + ['снизу', 'слева', 'сверху', 'справа'][S.k]);
     });
-    $('#btnResetCorners').addEventListener('click', () => {
-      S.corners = DEFAULT_CORNERS.map(p => p.slice());
-      cornersChanged();
+    $('#btnAutoFind').addEventListener('click', () => {
+      if (S.phase === 'recording') { toast('Запись уже идёт'); return; }
+      S.autoDetect = true;
+      S.autoShown = false;
+      S.lastAutoAt = 0;
+      if (S.phase === 'ready') { S.phase = 'setup'; S.recogStreak = 0; }
+      toast('Ищу доску…');
     });
     $('#btnForceStart').addEventListener('click', () => {
       if (S.phase !== 'setup') { toast(S.phase === 'ready' ? 'Доска уже распознана' : 'Запись уже идёт'); return; }
