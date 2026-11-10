@@ -1,0 +1,3 @@
+Chess pieces "cburnett" by Colin M. L. Burnett (https://en.wikipedia.org/wiki/User:Cburnett).
+Licensed under the GNU General Public License, version 2 or later (also available under GFDL and BSD).
+SVG files as distributed with chessground (https://github.com/lichess-org/chessground, GPL-3.0-or-later).

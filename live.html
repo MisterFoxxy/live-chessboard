@@ -269,7 +269,7 @@
           cont.append(card);
           g.board=Chessboard(`board${id}`,{
             position:g.chess.fen(),
-            pieceTheme:"https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png",
+            pieceTheme:"https://misterfoxxy.github.io/live-chessboard/img/chesspieces/cburnett/{piece}.svg",
             draggable:false
           });
           card.click(()=>openModal(g,round));
@@ -285,7 +285,7 @@
         if(!modalBoard){
           modalBoard=Chessboard("modalBoard",{
             position:"start",
-            pieceTheme:"https://misterfoxxy.github.io/live-chessboard/img/chesspieces/wikipedia/{piece}.png",
+            pieceTheme:"https://misterfoxxy.github.io/live-chessboard/img/chesspieces/cburnett/{piece}.svg",
             draggable:false,moveSpeed:300
           });
         } else {
