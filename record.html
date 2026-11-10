@@ -9,7 +9,7 @@
   <title>Запись партии камерой</title>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet"/>
-  <link rel="stylesheet" href="css/record.css?v=10"/>
+  <link rel="stylesheet" href="css/record.css?v=11"/>
 </head>
 <body>
 <div id="app">
@@ -183,7 +183,7 @@
         <ol class="hint">
           <li>Создайте на github.com закрытый (Private) репозиторий, например <b>live-chessboard-reports</b>.</li>
           <li>Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token. Repository access: только этот репозиторий. Permissions → Contents: Read and write.</li>
-          <li>Вставьте имя репозитория и токен ниже. Токен хранится только на этом телефоне.</li>
+          <li>Вставьте токен ниже (адрес репозитория уже вписан). Токен хранится только на этом телефоне и не сбрасывается при обновлении приложения.</li>
         </ol>
         <label class="field wide"><span>Репозиторий</span><input id="ghRepo" placeholder="MisterFoxxy/live-chessboard-reports" autocomplete="off" autocapitalize="off" spellcheck="false"/></label>
         <label class="field wide"><span>Токен</span><input id="ghToken" type="password" placeholder="github_pat_…" autocomplete="off" autocapitalize="off" spellcheck="false"/></label>
@@ -191,6 +191,7 @@
           <button id="ghSave" class="btn">Сохранить и проверить</button>
           <button id="ghForget" class="btn danger">Удалить токен</button>
         </div>
+        <button id="ghLink" class="btn">🔗 Ссылка для восстановления токена</button>
       </details>
       <button id="btnSendDebug" class="btn">↗ Отправить видео и журнал (поделиться)</button>
       <div class="btn-row two">
@@ -224,9 +225,9 @@
 <div id="toast" role="status"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js" crossorigin="anonymous"></script>
-<script src="js/board-vision.js?v=10"></script>
-<script src="js/board-detect.js?v=10"></script>
-<script src="js/square-ai.js?v=10"></script>
-<script src="js/record.js?v=10"></script>
+<script src="js/board-vision.js?v=11"></script>
+<script src="js/board-detect.js?v=11"></script>
+<script src="js/square-ai.js?v=11"></script>
+<script src="js/record.js?v=11"></script>
 </body>
 </html>
