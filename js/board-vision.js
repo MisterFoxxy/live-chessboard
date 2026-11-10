@@ -935,7 +935,8 @@
    *       events — {клетка: [моменты, когда она замирала в новом виде]} (точнее для порядка),
    *       recorded — SAN уже записанных ходов (при равенстве оставляем их),
    *       colorOf(square) → 'b' (видна чёрная фигура) | 'n' (чёрной нет) | null,
-   *       mask — Set клеток, закрытых рукой (их не оцениваем).
+   *       mask — Set клеток, закрытых рукой (их не оцениваем),
+   *       aiOf(square) — вероятности ИИ по клетке (сеть, обученная на этой партии) или null.
    * Возвращает {best, recorded} — оценки лучшей цепочки и записанной (или null).
    */
   function findSequence(chess, changes, opts) {
@@ -954,6 +955,8 @@
     const changed = SQUARES.filter(q => !mask.has(q) && (changes[q] || 0) >= T);
     const recordedKey = (opts.recorded || []).join(' ');
     const events = opts.events || null;
+    const aiOf = opts.aiOf || null; // вероятности ИИ по клетке [пусто, белая, чёрная, рука] или null
+    const AI_SURE = 0.85;
     const timesOf = seq => {
       const touched = {}, out = [];
       for (const m of seq) {
@@ -1003,12 +1006,31 @@
         const lim = Math.max(T * 3, (changes[q] || 0) * h);
         for (const o of occ[q] || []) if ((changes[o] || 0) <= lim) covered.add(o);
       }
+      // Что видит ИИ (обученный на этой партии): совпадает ли его уверенный класс клетки с итогом цепочки.
+      const aiClass = q => {
+        const p = aiOf ? aiOf(q) : null;
+        if (!p || p[3] >= 0.5) return -1;
+        let c = 0;
+        for (let k = 1; k < 3; k++) if (p[k] > p[c]) c = k;
+        return p[c] >= AI_SURE ? c : -1;
+      };
+      const want = q => { const x = chess.get(q); return x ? (x.color === 'w' ? 1 : 2) : 0; };
       let missing = 0, weak = 0, min = Infinity;
       for (const q of req) {
         if (mask.has(q)) continue;
         const v = changes[q] || 0;
+        if (v < T * 2 && aiClass(q) === want(q)) continue; // изменение слабое, но ИИ видит то, что нужно
         if (v < T) missing++; else if (v < T * 2) weak++;
         if (v < min) min = v;
+      }
+      let aiMis = 0;
+      const aiMisAt = [];
+      if (aiOf) {
+        for (const q of SQUARES) {
+          if (mask.has(q)) continue;
+          const c = aiClass(q);
+          if (c >= 0 && c !== want(q)) { aiMis++; aiMisAt.push(q); }
+        }
       }
       // Порядок ходов: k-й раз, когда цепочка трогает клетку, должен совпасть с k-м разом,
       // когда клетка (без руки рядом) замерла в новом виде (opts.events); иначе — первое изменение.
@@ -1046,10 +1068,11 @@
       const direct = new Set(req.concat(opt));
       for (const q of placed) direct.add(q);
       let unexplained = 0, bumped = 0, indirect = 0, unverified = 0;
+      const unexplainedAt = [];
       for (const q of strong) {
         if (direct.has(q)) continue;
         if (covered.has(q) || (near.has(q) && changes[q] < T * 3)) { indirect++; continue; }
-        if (sameColor(q)) bumped++; else unexplained++;
+        if (sameColor(q) || aiClass(q) === want(q)) bumped++; else { unexplained++; unexplainedAt.push(q); }
       }
       for (const q of req) if (mask.has(q)) unverified++;
       const noise = changed.filter(q => !covered.has(q)).length;
@@ -1083,10 +1106,11 @@
       return {
         back,
         moves: seq.slice(), san: seq.map(m => m.san), plies: seq.length,
-        req, opt, unexplained, bumped, indirect, unverified, missing, weak, noise, conflict, conflictAt, inv, idle, min,
+        req, opt, unexplained, unexplainedAt, bumped, indirect, unverified, missing, weak, noise, conflict, conflictAt, inv, idle, min,
+        aiMis, aiMisAt,
         noiseAt: changed.filter(q => !covered.has(q)),
         // каждый лишний ход тоже «стоит»: шум не объясняем цепочкой выдуманных ходов
-        cost: unexplained * 4 + missing * 3 + weak * 1.5 + conflict * 3 + noise + seq.length + indirect * 0.5 + back * 2,
+        cost: unexplained * 4 + missing * 3 + weak * 1.5 + conflict * 3 + noise + seq.length + indirect * 0.5 + back * 2 + aiMis * 2,
         fen: chess.fen().split(' ').slice(0, 4).join(' '),
         isRecorded: seq.map(m => m.san).join(' ') === recordedKey,
       };
