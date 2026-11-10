@@ -150,7 +150,10 @@
     // Наклон камеры: угол между её осью и перпендикуляром к доске (0° — ровно сверху).
     const n = Math.hypot(r3[0], r3[1], r3[2]) || 1;
     const tilt = Math.acos(Math.min(1, Math.abs(r3[2]) / n)) * 180 / Math.PI;
-    return { f, project, tilt };
+    // Точка доски под камерой (в клетках): от неё фигуры на кадре «наклоняются» наружу.
+    const Rt = [[r1[0], r1[1], r1[2]], [r2[0], r2[1], r2[2]], [r3[0], r3[1], r3[2]]];
+    const C = Rt.map(row => -(row[0] * t[0] + row[1] * t[1] + row[2] * t[2]));
+    return { f, project, tilt, center: C };
   }
 
   /** Куда на кадре «наклоняется» вертикальная фигура в точке доски (u, v ∈ [0,1]). */
@@ -265,9 +268,21 @@
    * на тёмной клетке заметнее, чем на светлой (чёрная фигура на тёмно-коричневой клетке
    * отличается от неё всего на 20–30 единиц, а шум светлой клетки бывает таким же).
    * chroma — вес разницы оттенка (R−B): тёмная клетка доски «тёплая», чёрная фигура — серая,
-   * светлые фигуры обычно желтоватее белой клетки. mode 'plain' — старый способ (для сравнения).
+   * светлые фигуры обычно желтоватее белой клетки. tex — вес изменения «неровности» клетки.
+   * mode 'plain' — простая разница (камера сбоку).
    */
-  const diffOpts = { mode: 'rel', relK: 80, relN: 130, chroma: 1 };
+  const diffOpts = { mode: 'rel', relK: 80, relN: 130, chroma: 1, tex: 2 };
+
+  /** Разброс яркости точек клетки (o — смещение клетки в данных, cnt — число точек). */
+  function texOf(f, o, cnt) {
+    let s = 0, s2 = 0;
+    for (let i = 0, k = o; i < cnt; i++, k += 3) {
+      const y = 0.299 * f.data[k] + 0.587 * f.data[k + 1] + 0.114 * f.data[k + 2];
+      s += y; s2 += y * y;
+    }
+    const mu = s / cnt;
+    return Math.sqrt(Math.max(0, s2 / cnt - mu * mu));
+  }
 
   /**
    * Насколько изменилась каждая клетка (с поправкой на общую яркость/экспозицию).
@@ -289,7 +304,7 @@
     if (!(g >= 0.7)) g = 0.7; else if (g > 1.4) g = 1.4;
     const top = Math.max(1, Math.round(cnt * (topFrac || 0.35)));
     const d = new Float32Array(cnt);
-    const rel = !plain && diffOpts.mode !== 'plain', K = diffOpts.relK, N = diffOpts.relN, CH = diffOpts.chroma;
+    const rel = !plain && diffOpts.mode !== 'plain', K = diffOpts.relK, N = diffOpts.relN, CH = diffOpts.chroma, TK = diffOpts.tex;
     for (let cell = 0; cell < 64; cell++) {
       const o = cell * a.per;
       for (let i = 0, k = o; i < cnt; i++, k += 3) {
@@ -297,8 +312,9 @@
         const r2 = b.data[k] * g, g2 = b.data[k + 1] * g, b2 = b.data[k + 2] * g;
         let v = (Math.abs(r1 - r2) + Math.abs(g1 - g2) + Math.abs(b1 - b2)) / 3;
         if (rel) {
-          v += CH * Math.abs((r1 - b1) - (r2 - b2));
-          v *= N / ((r1 + g1 + b1 + r2 + g2 + b2) / 6 + K);
+          // на тёмном усиливаем (чёрная фигура на тёмной клетке), на светлом не ослабляем
+          const vr = (v + CH * Math.abs((r1 - b1) - (r2 - b2))) * N / ((r1 + g1 + b1 + r2 + g2 + b2) / 6 + K);
+          if (vr > v) v = vr;
         }
         d[i] = v;
       }
@@ -306,6 +322,13 @@
       let sum = 0;
       for (let i = cnt - top; i < cnt; i++) sum += d[i];
       out[cell] = sum / top;
+      if (rel && TK) {
+        // Неровность клетки: светлая фигура на светлой клетке почти не меняет цвет, но пустая
+        // клетка гладкая, а у фигуры есть контур и тень.
+        const ta = texOf(a, o, cnt), tb = texOf(b, o, cnt) * g;
+        const tv = TK * Math.abs(ta - tb);
+        if (tv > out[cell]) out[cell] = tv;
+      }
     }
     return out;
   }
@@ -852,6 +875,34 @@
     return lum[Math.floor(n * 0.1)];
   }
 
+  /** «Светлый уровень» клетки — яркость самых светлых 10% точек (светлая фигура на тёмной клетке). */
+  function brightLevel(f, cell) {
+    const n = f.per / 3, o = cell * f.per, d = f.data, lum = new Float32Array(n);
+    for (let i = 0; i < n; i++) lum[i] = 0.299 * d[o + i * 3] + 0.587 * d[o + i * 3 + 1] + 0.114 * d[o + i * 3 + 2];
+    lum.sort();
+    return lum[Math.min(n - 1, Math.floor(n * 0.9))];
+  }
+
+  /**
+   * Порог «на тёмной клетке светлая фигура». pieceAt(cell) → 'w' | 'b' | '' | 'x' (неизвестно),
+   * darkCell(cell) — тёмная ли клетка доски. Возвращает {thr, gap} или null.
+   */
+  function calibrateBright(f, pieceAt, darkCell) {
+    const white = [], other = [];
+    for (let cell = 0; cell < 64; cell++) {
+      if (!darkCell(cell)) continue;
+      const p = pieceAt(cell);
+      if (p === 'x') continue;
+      (p === 'w' ? white : other).push(brightLevel(f, cell));
+    }
+    if (white.length < 3 || other.length < 3) return null;
+    white.sort((a, b) => a - b); other.sort((a, b) => a - b);
+    const loWhite = white[Math.floor(white.length * 0.2)], hiOther = other[Math.floor(other.length * 0.9)];
+    const gap = loWhite - hiOther;
+    if (gap < 15) return null;
+    return { thr: (loWhite + hiOther) / 2, gap };
+  }
+
   /**
    * Порог «на клетке чёрная фигура» по позиции, где известно, что где стоит.
    * pieceAt(cell) → 'b' | 'w' | '' . Возвращает {thr, gap} или null, если классы не разделяются.
@@ -943,8 +994,13 @@
       for (const q of placed) covered.add(q);
       // «Тень» (наклон фигуры на соседнюю клетку) не может быть намного заметнее самой фигуры:
       // сильное изменение рядом — это другая фигура, а не тень.
+      // Высокая фигура (слон, ферзь, король) сверху «лежит» изображением на соседней клетке
+      // почти целиком, поэтому её тень может быть сильнее изменения на её собственной клетке.
+      const HEIGHT = { p: 1.5, n: 2.5, r: 2.5, b: 4, q: 4, k: 4 };
       for (const q of Array.from(covered)) {
-        const lim = Math.max(T * 3, (changes[q] || 0) * 1.5);
+        const a = basePos[q], b = chess.get(q);
+        const h = Math.max(a ? HEIGHT[a[1]] : 0, b ? HEIGHT[b.type] : 0, 1.5);
+        const lim = Math.max(T * 3, (changes[q] || 0) * h);
         for (const o of occ[q] || []) if ((changes[o] || 0) <= lim) covered.add(o);
       }
       let missing = 0, weak = 0, min = Infinity;
@@ -981,7 +1037,9 @@
       // (только для чёрных фигур: «не чёрная» не отличает светлую фигуру от пустой клетки)
       const sameColor = q => {
         const p = chess.get(q);
-        return !!p && p.color === 'b' && !!opts.colorOf && opts.colorOf(q) === 'b';
+        if (!p || p.color !== 'b' || !opts.colorOf) return false;
+        const c = opts.colorOf(q);
+        return c === 'b' || (!!c && typeof c === 'object' && c.b === true);
       };
       // direct — сильные изменения, объяснённые самими ходами; объяснение «тенью» или наклоном
       // соседней фигуры слабее (indirect), как и клетка хода, закрытая рукой (unverified).
@@ -1007,17 +1065,28 @@
           const c = mask.has(q) ? null : opts.colorOf(q);
           if (!c) continue;
           const isBlack = p.color === 'b';
+          const black = typeof c === 'string' ? (c === 'b' ? true : c === 'n' ? false : null) : c.b;
           // «Чёрное» на клетке может быть наклонившейся соседней чёрной фигурой (ферзь d8 над c8).
-          if (c === 'b' && !isBlack && (occBy[q] || []).some(o => { const x = chess.get(o); return x && x.color === 'b'; })) continue;
-          if ((c === 'b') !== isBlack) { conflict++; conflictAt.push(q); }
+          const leanBlack = (occBy[q] || []).some(o => { const x = chess.get(o); return x && x.color === 'b'; });
+          let bad = black != null && black !== isBlack && !(black && !isBlack && leanBlack);
+          // Светлая фигура на тёмной клетке ярко видна: если по цепочке она там, а светлого нет — не то
+          // (например, dxc5 вместо cxd4: клетки те же, но на c5 должна стоять белая пешка).
+          if (!bad && typeof c === 'object' && c.w === false && p.color === 'w') bad = true;
+          if (bad) { conflict++; conflictAt.push(q); }
         }
       }
+      // Фигура ушла и вернулась на свою клетку — так обычно «объясняют» задетую фигуру. Редко бывает.
+      let back = 0;
+      for (let i = 0; i < seq.length; i++) {
+        for (let j = i + 1; j < seq.length; j++) if (seq[j].from === seq[i].to && seq[j].to === seq[i].from) back++;
+      }
       return {
+        back,
         moves: seq.slice(), san: seq.map(m => m.san), plies: seq.length,
         req, opt, unexplained, bumped, indirect, unverified, missing, weak, noise, conflict, conflictAt, inv, idle, min,
         noiseAt: changed.filter(q => !covered.has(q)),
         // каждый лишний ход тоже «стоит»: шум не объясняем цепочкой выдуманных ходов
-        cost: unexplained * 4 + missing * 3 + weak * 1.5 + conflict * 3 + noise + seq.length + indirect * 0.5,
+        cost: unexplained * 4 + missing * 3 + weak * 1.5 + conflict * 3 + noise + seq.length + indirect * 0.5 + back * 2,
         fen: chess.fen().split(' ').slice(0, 4).join(' '),
         isRecorded: seq.map(m => m.san).join(' ') === recordedKey,
       };
@@ -1333,7 +1402,7 @@
     computeHomography, applyH, orderQuad, isConvexQuad, cameraFromH,
     squareToCell, cellToSquare,
     samplePlan, sampleWithPlan, sampleBoard, averageFeatures, cellDiff, cellStats, diffOpts,
-    cloneFeatures, copyCells, darkLevel, calibrateDark,
+    cloneFeatures, copyCells, darkLevel, calibrateDark, brightLevel, calibrateBright,
     detectStartPosition, squareChanges, squaresOfMove, uniqueMoves, occlusionMap, findMove, findFastMove, scoreMoves, scoreSquares, findSequence,
     MotionTracker,
   };
