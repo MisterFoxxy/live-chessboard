@@ -9,7 +9,7 @@
   <title>Запись партии камерой</title>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet"/>
-  <link rel="stylesheet" href="css/record.css?v=12"/>
+  <link rel="stylesheet" href="css/record.css?v=13"/>
 </head>
 <body>
 <div id="app">
@@ -69,6 +69,19 @@
     <button id="btnCamera" class="btn primary">📷 Запись партии камерой</button>
     <label class="btn" for="fileVideo">🎞 Распознать из видеофайла</label>
     <input id="fileVideo" type="file" accept="video/*" hidden/>
+
+    <details class="card train-card" id="trainCard">
+      <summary>🧠 Видео для обучения ИИ</summary>
+      <p class="hint">Записи партий — например, из idChess, где на экране есть цифровая доска, — помогают обучить распознавание на разных досках и при разном свете. Видео уходят в ваш закрытый репозиторий на GitHub, в папку <b>training</b>. Можно выбрать сразу много.</p>
+      <div id="trainTokenRow" class="gh-setup" hidden>
+        <label class="field wide"><span>Токен GitHub (тот же, что для отчётов)</span><input id="trainToken" type="password" placeholder="github_pat_…" autocomplete="off" autocapitalize="off" spellcheck="false"/></label>
+        <button id="trainTokenSave" class="btn">Сохранить</button>
+      </div>
+      <input id="trainFiles" type="file" accept="video/*" multiple hidden/>
+      <label id="trainPick" for="trainFiles" class="btn primary">Выбрать видео…</label>
+      <div id="trainProgress" class="gh-progress" hidden><div></div></div>
+      <small id="trainInfo" class="ai-info"></small>
+    </details>
 
     <div class="section-label">Мои партии</div>
     <div class="card" id="savedList"><p class="empty">Пока нет сохранённых партий.</p></div>
@@ -225,9 +238,9 @@
 <div id="toast" role="status"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js" crossorigin="anonymous"></script>
-<script src="js/board-vision.js?v=12"></script>
-<script src="js/board-detect.js?v=12"></script>
-<script src="js/square-ai.js?v=12"></script>
-<script src="js/record.js?v=12"></script>
+<script src="js/board-vision.js?v=13"></script>
+<script src="js/board-detect.js?v=13"></script>
+<script src="js/square-ai.js?v=13"></script>
+<script src="js/record.js?v=13"></script>
 </body>
 </html>

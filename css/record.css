@@ -357,3 +357,7 @@ button { cursor: pointer; }
 .gh-setup summary { cursor: pointer; color: var(--muted); font-size: 14px; }
 .gh-setup ol { padding-left: 18px; margin: 8px 0; }
 .gh-setup .field { margin-bottom: 8px; }
+
+.train-card summary { cursor: pointer; font-weight: 600; }
+.train-card .btn { margin-top: 8px; }
+.btn.disabled { opacity: .5; pointer-events: none; }
