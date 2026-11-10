@@ -9,7 +9,7 @@
   <title>Запись партии камерой</title>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet"/>
-  <link rel="stylesheet" href="css/record.css?v=9"/>
+  <link rel="stylesheet" href="css/record.css?v=10"/>
 </head>
 <body>
 <div id="app">
@@ -173,8 +173,26 @@
     </div>
     <div id="debugCard" class="card" hidden>
       <div class="section-label">Если записалось не так, как вы ходили</div>
-      <p class="hint" style="margin-top:0">Отправьте видео партии и журнал программы — по ним можно увидеть, где распознавание ошиблось, и исправить его.</p>
-      <button id="btnSendDebug" class="btn">↗ Отправить видео и журнал</button>
+      <p class="hint" style="margin-top:0">Отправьте видео партии и журнал программы — по ним можно увидеть, где распознавание ошиблось, и исправить его. Отправка на GitHub не зависит от размера видео.</p>
+      <button id="btnGhSend" class="btn primary">☁ Отправить разработчику (GitHub)</button>
+      <div id="ghProgress" class="gh-progress" hidden><div></div></div>
+      <small id="ghInfo" class="ai-info"></small>
+      <details id="ghSetup" class="gh-setup">
+        <summary>Настроить отправку на GitHub</summary>
+        <p class="hint">Видео и журнал загружаются в ваш закрытый репозиторий на GitHub — оттуда их забирает разработчик. Настраивается один раз.</p>
+        <ol class="hint">
+          <li>Создайте на github.com закрытый (Private) репозиторий, например <b>live-chessboard-reports</b>.</li>
+          <li>Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token. Repository access: только этот репозиторий. Permissions → Contents: Read and write.</li>
+          <li>Вставьте имя репозитория и токен ниже. Токен хранится только на этом телефоне.</li>
+        </ol>
+        <label class="field wide"><span>Репозиторий</span><input id="ghRepo" placeholder="MisterFoxxy/live-chessboard-reports" autocomplete="off" autocapitalize="off" spellcheck="false"/></label>
+        <label class="field wide"><span>Токен</span><input id="ghToken" type="password" placeholder="github_pat_…" autocomplete="off" autocapitalize="off" spellcheck="false"/></label>
+        <div class="btn-row two">
+          <button id="ghSave" class="btn">Сохранить и проверить</button>
+          <button id="ghForget" class="btn danger">Удалить токен</button>
+        </div>
+      </details>
+      <button id="btnSendDebug" class="btn">↗ Отправить видео и журнал (поделиться)</button>
       <div class="btn-row two">
         <button id="btnDebugVideo" class="btn">⬇ Видео</button>
         <button id="btnDebugLog" class="btn">⬇ Журнал</button>
@@ -206,9 +224,9 @@
 <div id="toast" role="status"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js" crossorigin="anonymous"></script>
-<script src="js/board-vision.js?v=9"></script>
-<script src="js/board-detect.js?v=9"></script>
-<script src="js/square-ai.js?v=9"></script>
-<script src="js/record.js?v=9"></script>
+<script src="js/board-vision.js?v=10"></script>
+<script src="js/board-detect.js?v=10"></script>
+<script src="js/square-ai.js?v=10"></script>
+<script src="js/record.js?v=10"></script>
 </body>
 </html>

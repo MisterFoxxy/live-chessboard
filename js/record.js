@@ -15,7 +15,7 @@
 
   /* ---------- Константы и утилиты ---------- */
 
-  const APP_VERSION = '9 · надёжнее в конце партии, видео для отладки легче';
+  const APP_VERSION = '10 · отчёты кнопкой на GitHub';
   const TICK_MS = 33;      // ~30 кадров/с
   const SETTLE_MS = 600;   // полная проверка, когда вся доска неподвижна
   const PROC_W = 640;
@@ -1694,12 +1694,113 @@
     const ready = !!(D && D.blob);
     $('#btnDebugVideo').hidden = !D;
     $('#btnSendDebug').disabled = !!D && !ready;
+    $('#btnGhSend').disabled = !!D && !ready;
     $('#btnDebugVideo').disabled = !ready;
     $('#debugInfo').textContent = !D
       ? (settings.saveVideo ? 'Этот браузер не смог записать видео — отправьте хотя бы журнал.' : 'Запись видео выключена в настройках — отправьте журнал.')
       : ready
         ? `Видео: ${(D.blob.size / 1048576).toFixed(1)} МБ` + (D.bytes > DEBUG_MAX_BYTES ? ' (записано только начало партии)' : '')
         : 'Готовлю видео…';
+  }
+
+  /* ---------- Отправка отчёта в репозиторий GitHub ---------- */
+  // Видео и журнал загружаются в закрытый репозиторий владельца (токен хранится только на телефоне),
+  // откуда их забирает разработчик. Размер видео не ограничен чатом: большие делим на части.
+  const GH_API = 'https://api.github.com';
+  const GH_PART = 15 * 1024 * 1024;
+  const gh = {
+    get repo() { return store.get('vc_gh_repo', ''); },
+    get token() { return store.get('vc_gh_token', ''); },
+  };
+
+  function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result).split(',')[1] || '');
+      r.onerror = () => reject(r.error || new Error('read'));
+      r.readAsDataURL(blob);
+    });
+  }
+
+  function ghRequest(method, path, body, onProgress) {
+    return new Promise((resolve, reject) => {
+      const x = new XMLHttpRequest();
+      x.open(method, GH_API + path);
+      x.setRequestHeader('Authorization', 'Bearer ' + gh.token);
+      x.setRequestHeader('Accept', 'application/vnd.github+json');
+      if (body) x.setRequestHeader('Content-Type', 'application/json');
+      if (onProgress && x.upload) x.upload.onprogress = e => { if (e.lengthComputable) onProgress(e.loaded); };
+      x.onload = () => {
+        let data = null;
+        try { data = JSON.parse(x.responseText); } catch (e) { /* не JSON */ }
+        resolve({ status: x.status, data });
+      };
+      x.onerror = () => reject(new Error('network'));
+      x.send(body ? JSON.stringify(body) : null);
+    });
+  }
+
+  const ghPath = p => p.split('/').map(encodeURIComponent).join('/');
+
+  function ghError(status, data) {
+    if (status === 401) return 'GitHub не принял токен: проверьте его или создайте новый.';
+    if (status === 403) return 'У токена нет права записи (Contents: Read and write) или он истёк.';
+    if (status === 404) return 'Репозиторий не найден или токен к нему не допущен.';
+    if (status === 413) return 'Файл слишком большой для GitHub.';
+    return 'Ошибка GitHub ' + status + (data && data.message ? ': ' + data.message : '');
+  }
+
+  async function ghCheck() {
+    if (!/^[\w.-]+\/[\w.-]+$/.test(gh.repo) || !gh.token) return 'Укажите репозиторий (владелец/имя) и токен.';
+    let r;
+    try { r = await ghRequest('GET', '/repos/' + gh.repo); } catch (e) { return 'Нет связи с GitHub.'; }
+    if (r.status !== 200) return ghError(r.status, r.data);
+    if (r.data && r.data.permissions && r.data.permissions.push === false) return 'У токена нет права записи в репозиторий.';
+    return null;
+  }
+
+  async function ghSend() {
+    const info = $('#ghInfo'), bar = $('#ghProgress'), btn = $('#btnGhSend');
+    if (!gh.repo || !gh.token) {
+      $('#ghSetup').open = true;
+      info.textContent = 'Сначала настройте отправку: репозиторий и токен (один раз).';
+      return;
+    }
+    btn.disabled = true;
+    try {
+      const stamp = new Date().toTimeString().slice(0, 8).replace(/:/g, '');
+      const folder = `reports/${debugBaseName()}-${stamp}`;
+      const files = [{ name: 'log.json', blob: new Blob([debugLogJson()], { type: 'application/json' }) }];
+      const v = debugVideoFile();
+      if (v) {
+        const ext = v.name.split('.').pop();
+        const part = window.vcGhPart || GH_PART; // размер части (в проверках — меньше)
+        if (v.size <= part) files.push({ name: 'video.' + ext, blob: v });
+        else for (let i = 0, k = 1; i < v.size; i += part, k++) files.push({ name: `video.${ext}.part${k}`, blob: v.slice(i, i + part) });
+      }
+      const total = files.reduce((n, f) => n + f.blob.size, 0) * 4 / 3 + 1;
+      let done = 0;
+      bar.hidden = false;
+      const show = x => { bar.firstElementChild.style.width = Math.min(100, Math.round(x / total * 100)) + '%'; };
+      show(0);
+      for (const f of files) {
+        info.textContent = `Отправляю ${f.name} (${(f.blob.size / 1048576).toFixed(1)} МБ)…`;
+        const content = await blobToBase64(f.blob);
+        const r = await ghRequest('PUT', `/repos/${gh.repo}/contents/${ghPath(folder + '/' + f.name)}`,
+          { message: `Отчёт ${debugBaseName()}: ${f.name}`, content }, loaded => show(done + loaded));
+        if (r.status !== 200 && r.status !== 201) throw new Error(ghError(r.status, r.data));
+        done += content.length;
+        show(done);
+      }
+      show(total);
+      store.set('vc_gh_last', folder);
+      info.textContent = `Отправлено: ${gh.repo} → ${folder}. Напишите разработчику «отправил отчёт».`;
+      toast('Отчёт отправлен');
+    } catch (e) {
+      info.textContent = e && e.message === 'network' ? 'Нет связи с GitHub. Попробуйте ещё раз.' : (e && e.message) || 'Не удалось отправить.';
+    } finally {
+      btn.disabled = false;
+    }
   }
 
   function fileName(pgn) {
@@ -1849,6 +1950,26 @@
     $('#btnShare').addEventListener('click', () => share($('#pgnOut').value));
     $('#btnDebugVideo').addEventListener('click', () => { const f = debugVideoFile(); if (f) saveFile(f); });
     $('#btnDebugLog').addEventListener('click', () => saveFile(debugLogFile()));
+    $('#ghRepo').value = gh.repo;
+    $('#ghToken').value = gh.token ? '••••••••' : '';
+    $('#ghSave').addEventListener('click', async () => {
+      const repo = $('#ghRepo').value.trim().replace(/^https?:\/\/github\.com\//, '').replace(/\/+$/, '');
+      const token = $('#ghToken').value.trim();
+      store.set('vc_gh_repo', repo);
+      if (token && !/^•+$/.test(token)) store.set('vc_gh_token', token);
+      $('#ghRepo').value = repo;
+      $('#ghToken').value = gh.token ? '••••••••' : '';
+      $('#ghInfo').textContent = 'Проверяю доступ…';
+      const err = await ghCheck();
+      $('#ghInfo').textContent = err || 'Готово: отчёты будут уходить в ' + repo + '.';
+      if (!err) $('#ghSetup').open = false;
+    });
+    $('#ghForget').addEventListener('click', () => {
+      store.del('vc_gh_token');
+      $('#ghToken').value = '';
+      $('#ghInfo').textContent = 'Токен удалён с этого телефона.';
+    });
+    $('#btnGhSend').addEventListener('click', ghSend);
     $('#btnSendDebug').addEventListener('click', async () => {
       const files = [debugVideoFile(), debugLogFile()].filter(Boolean);
       try {
