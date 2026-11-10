@@ -15,7 +15,7 @@
 
   /* ---------- Константы и утилиты ---------- */
 
-  const APP_VERSION = '8 · светлые фигуры на светлых клетках, цвет фигуры на тёмных клетках';
+  const APP_VERSION = '9 · надёжнее в конце партии, видео для отладки легче';
   const TICK_MS = 33;      // ~30 кадров/с
   const SETTLE_MS = 600;   // полная проверка, когда вся доска неподвижна
   const PROC_W = 640;
@@ -141,6 +141,7 @@
     onset: {},           // клетка → когда начала отличаться от эталона
     firstChange: {},     // клетка → когда на ней впервые что-то замерло после проверки (порядок ходов)
     quietAt: -1,         // какую паузу уже проверили
+    weakCand: null,      // позиция со слабыми признаками и с какого момента она лучшая: {fen, since}
     settled: null,       // как выглядела каждая клетка, когда в последний раз замирала
     events: {},          // клетка → моменты, когда она замирала в новом виде (рядом без руки)
     darkCal: null,       // порог «чёрная фигура» по тёмному уровню клетки
@@ -270,7 +271,8 @@
       .find(t => { try { return MediaRecorder.isTypeSupported(t); } catch (e) { return false; } });
     let rec;
     try {
-      rec = new MediaRecorder(stream, Object.assign({ videoBitsPerSecond: 1500000 }, type ? { mimeType: type } : {}));
+      // ~0,6 Мбит/с: для разбора хватает, а 5 минут партии — около 25 МБ, такой файл можно отправить
+      rec = new MediaRecorder(stream, Object.assign({ videoBitsPerSecond: 600000 }, type ? { mimeType: type } : {}));
     } catch (e) { return; }
     const D = { rec, chunks: [], bytes: 0, type: rec.mimeType || type || 'video/webm', videoT0: video.currentTime, startedAt: Date.now(), blob: null };
     rec.ondataavailable = e => {
@@ -493,6 +495,7 @@
     S.recent.clear();
     S.onset = {};
     S.firstChange = {};
+    S.weakCand = null;
     S.settled = BV.cloneFeatures(feat);
     S.events = {};
     // По проверенной позиции подбираем порог «на клетке чёрная фигура».
@@ -804,7 +807,20 @@
     // Ход, обе клетки которого закрыты рукой, проверить нечем — такие исправления не принимаем.
     const hiddenMove = b.moves.some((m, i) => mask.has(m.from) && mask.has(m.to) &&
       !(recorded[i] && recorded[i].from === m.from && recorded[i].to === m.to));
-    const fix = !b.isRecorded && !hiddenMove && (!rec || rec.cost > b.cost + 2 || reorder) && (b.weak === 0 || reorder);
+    // Уже записанные ходы переписываем, только когда большая часть доски видна.
+    let keep = 0;
+    while (keep < recorded.length && keep < b.moves.length && recorded[keep].from === b.moves[keep].from &&
+      recorded[keep].to === b.moves[keep].to) keep++;
+    const rewrites = keep < recorded.length;
+    // Слабые признаки (светлая пешка на светлой клетке) принимаем, если та же позиция остаётся
+    // лучшим объяснением 1,5 с подряд: сдвиг телефона так долго одно и то же не «показывает».
+    let weakOk = b.weak === 0;
+    if (!weakOk) {
+      if (S.weakCand && S.weakCand.fen === b.fen) weakOk = t - S.weakCand.since >= 1500;
+      else S.weakCand = { fen: b.fen, since: t };
+    }
+    const fix = !b.isRecorded && !hiddenMove && !(rewrites && mask.size > 12) &&
+      (!rec || rec.cost > b.cost + 2 || reorder) && (weakOk || reorder);
     if (!fix && !b.isRecorded) return false;
     qe.act = fix ? 'fix' : 'ok';
     if (fix) {
