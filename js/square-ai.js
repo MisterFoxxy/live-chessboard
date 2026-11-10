@@ -110,7 +110,11 @@
     ready() {
       return this.steps >= 300 && this.count(EMPTY) >= 8 && this.count(WHITE) >= 8 && this.count(BLACK) >= 8;
     }
-    knowsHand() { return this.ready() && this.count(HAND) >= 15; }
+    // Руке доверяем, когда сеть видела хотя бы две проверенные позиции и достаточно примеров руки.
+    knowsHand() {
+      return this.ready() && this.count(HAND) >= 40 &&
+        this.count(EMPTY) + this.count(WHITE) + this.count(BLACK) >= 128;
+    }
 
     updateStats() {
       const all = [].concat(...this.data);

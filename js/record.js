@@ -129,6 +129,8 @@
     basePly: 0,          // сколько полуходов было на момент fullRef
     recent: new Set(),   // клетки недавних ходов: их эталон мог устареть
     snaps: [],           // снимки эталона после быстрых ходов: {ply, ref}
+    refine: null,        // клетки последнего хода, которые надо переснять, когда рука уйдёт
+    lastFast: null,      // последний быстрый ход: {ply, to, pre (эталон до хода), t} — для отмены «остановки в пути»
     onset: {},           // клетка → когда начала отличаться от эталона
     empty: { feat: null, known: new Set() }, // как выглядят пустые клетки (по номерам клеток кадра)
     aiP: null,           // вероятности ИИ по клеткам кадра: [пусто, белая, чёрная, рука]
@@ -293,7 +295,8 @@
       if (S.badQuad) return null;
       S.H = BV.computeHomography(BV.UNIT, q.map(p => [p[0] * w, p[1] * h]));
       if (!S.H) return null;
-      S.plan = BV.samplePlan(S.H, SAMPLE_OPTS);
+      S.cam = BV.cameraFromH(S.H, w, h);
+      S.plan = BV.samplePlan(S.H, Object.assign({ camera: S.cam }, SAMPLE_OPTS));
       S.occ = null;
     }
     pctx.drawImage(video, 0, 0, w, h);
@@ -376,7 +379,7 @@
   }
 
   function ensureOcc() {
-    if (!S.occ || S.occK !== S.k) { S.occ = BV.occlusionMap(S.H, S.k); S.occK = S.k; }
+    if (!S.occ || S.occK !== S.k) { S.occ = BV.occlusionMap(S.H, S.k, { camera: S.cam }); S.occK = S.k; }
   }
 
   /** Новый эталон: доска сейчас совпадает с позицией на цифровой доске. */
@@ -385,6 +388,8 @@
     S.ref = BV.cloneFeatures(feat);
     S.basePly = S.chess.history().length;
     S.snaps = [];
+    S.refine = null;
+    S.lastFast = null;
     S.recent.clear();
     S.onset = {};
     // Запоминаем, как выглядят пустые клетки, — это помогает отличить «фигура ушла» от «пришла».
@@ -422,10 +427,15 @@
   /** Примеры «рука»: клетки, по которым сейчас движется что-то, сильно непохожее на эталон. */
   function collectHand(feat, ch, t) {
     if (!settings.ai || !tracker.moving || (S.aiFrame++ % 2)) return;
+    // Примеров «рука» не больше, чем примеров доски: иначе сеть начнёт видеть руку везде.
+    const board = ai.count(AI.EMPTY) + ai.count(AI.WHITE) + ai.count(AI.BLACK);
+    if (ai.count(AI.HAND) >= board * 0.5) return;
     const T = settings.threshold, norm = AI.boardNorm(feat), cand = [];
     for (const sq of BV.SQUARES) {
       const cell = BV.squareToCell(sq, S.k);
-      if (tracker.since[cell] === t && ch.bySquare[sq] >= T * 3) cand.push([sq, cell]);
+      // клетка сейчас сильно меняется от кадра к кадру и сильно отличается от эталона
+      if (tracker.since[cell] === t && tracker.lastCells[cell] > tracker.cellThr[cell] * 2 &&
+          ch.bySquare[sq] >= T * 3) cand.push([sq, cell]);
     }
     for (let i = 0; i < 2 && cand.length; i++) {
       const [sq, cell] = cand.splice(Math.floor(Math.random() * cand.length), 1)[0];
@@ -501,6 +511,9 @@
       onset[sq] = S.onset[sq] != null ? S.onset[sq] : t;
     }
     ensureOcc();
+    if (revertInTransit(feat, t, stillMs)) return;
+    refineRef(feat, ch, t, stillMs, lastMotion);
+    absorbStale(feat, ch, stillMs);
     collectHand(feat, ch, t);
     runAI(feat);
     const aiP = S.aiP, handKnown = !!aiP && ai.knowsHand();
@@ -520,6 +533,7 @@
       trace: window.vcTrace,
     });
     if (!found) return;
+    const pre = BV.cloneFeatures(S.ref);
     const moveSq = [];
     for (const m of found) {
       const played = applyMove({ from: m.from, to: m.to, promotion: m.promotion }, 'fast');
@@ -536,9 +550,109 @@
       delete S.onset[sq];
     }
     BV.copyCells(S.ref, feat, cells);
+    S.refine = { squares: new Set(touched), at: t };
+    S.lastFast = found.length === 1 ? { ply: S.chess.history().length, from: found[0].from, to: found[0].to, pre, t } : null;
     S.snaps.push({ ply: S.chess.history().length, ref: BV.cloneFeatures(S.ref) });
     if (S.snaps.length > 8) S.snaps.shift();
     S.warn = null;
+  }
+
+  /*
+   * Ход записан, когда клетки замерли на доли секунды, — рука могла ещё частично
+   * закрывать клетку. Когда клетки хода и их соседи спокойны 0,3 с, переснимаем их эталон.
+   * Если соперник уже начал ход (изменилась другая клетка), не трогаем — это решит проверка.
+   */
+  function refineRef(feat, ch, t, stillMs, lastMotion) {
+    const R = S.refine;
+    if (!R) return;
+    if (t - R.at > 5000) { S.refine = null; return; }
+    const T = settings.threshold;
+    for (const sq of BV.SQUARES) {
+      if (!R.squares.has(sq) && !S.recent.has(sq) && ch.bySquare[sq] >= T && S.onset[sq] != null && S.onset[sq] > R.at) {
+        S.refine = null;
+        return;
+      }
+    }
+    const cells = [];
+    for (const sq of Array.from(R.squares)) {
+      if (stillMs[sq] >= 300 && t - lastMotion[sq] >= 300) {
+        cells.push(BV.squareToCell(sq, S.k));
+        R.squares.delete(sq);
+        delete S.onset[sq];
+      }
+    }
+    if (cells.length) BV.copyCells(S.ref, feat, cells);
+    if (!R.squares.size) S.refine = null;
+  }
+
+  /*
+   * Руку с фигурой задержали над клеткой по пути — ход записался раньше времени.
+   * Если вскоре клетка назначения снова выглядит как до хода, ход ложный: отменяем его
+   * (настоящий ход найдётся, когда фигуру поставят).
+   */
+  function revertInTransit(feat, t, stillMs) {
+    const L = S.lastFast;
+    if (!L) return false;
+    if (t - L.t > 2500 || S.chess.history().length !== L.ply) { S.lastFast = null; return false; }
+    const chPre = BV.squareChanges(L.pre, feat, S.k).bySquare;
+    if (chPre[L.to] >= settings.threshold * 0.6 || stillMs[L.to] < settings.fastMs) return false;
+    // Та же фигура явно стоит на другой клетке, куда могла пойти этим ходом?
+    // и больше ничего не изменилось (иначе это уже ответ соперника, например взятие на проходе).
+    const T = settings.threshold;
+    const undone = S.chess.undo();
+    const alt = undone ? S.chess.moves({ square: L.from, verbose: true })
+      .filter(m => m.to !== L.to && chPre[m.to] >= T && stillMs[m.to] >= settings.fastMs) : [];
+    if (undone) S.chess.move(undone);
+    if (alt.length !== 1) return false;
+    const explained = new Set([L.from, L.to, alt[0].to]);
+    for (const q of [L.from, L.to, alt[0].to]) for (const o of S.occ[q] || []) explained.add(o);
+    if (BV.SQUARES.some(q => !explained.has(q) && chPre[q] >= T * 1.6)) return false;
+    undoPlies(1);
+    const hist = S.chess.history({ verbose: true });
+    const last = hist[hist.length - 1];
+    S.lastMove = last ? [last.from, last.to] : [];
+    S.ref = L.pre;
+    S.refine = null;
+    S.lastFast = null;
+    S.snaps = S.snaps.filter(x => x.ply <= S.chess.history().length);
+    renderBoard();
+    renderMoves();
+    autosave();
+    return true;
+  }
+
+  /*
+   * Клетка давно (5 с) изменилась и неподвижна, но ни один возможный ход её не объясняет
+   * (на углу доски лежит рука, сдвинули часы, изменился свет) — принимаем её новый вид
+   * как норму, иначе она навсегда мешает проверке.
+   */
+  const ABSORB_MS = 5000;
+  function absorbStale(feat, ch, stillMs) {
+    const T = settings.threshold;
+    const stale = BV.SQUARES.filter(sq => ch.bySquare[sq] >= T && stillMs[sq] >= ABSORB_MS);
+    if (!stale.length) return;
+    const legal = S.chess.moves({ verbose: true });
+    const cells = [];
+    for (const sq of stale) {
+      const used = legal.some(m => {
+        const q = BV.squaresOfMove(m);
+        return q.indexOf(sq) >= 0 && q.every(x => ch.bySquare[x] >= T);
+      });
+      if (used) continue;
+      cells.push(BV.squareToCell(sq, S.k));
+      delete S.onset[sq];
+    }
+    if (!cells.length) return;
+    BV.copyCells(S.ref, feat, cells);
+    if (S.fullRef) BV.copyCells(S.fullRef, feat, cells);
+    logMove(cells.length + ' cells', 'absorb');
+  }
+
+  /** Вероятности ИИ по клетке доски (только когда ИИ уже узнаёт руку). */
+  function aiClassOf() {
+    if (!S.aiP || !ai.knowsHand()) return null;
+    const P = S.aiP;
+    return sq => P[BV.squareToCell(sq, S.k)];
   }
 
   function undoPlies(n) {
@@ -568,7 +682,7 @@
     const ch = BV.squareChanges(bRef, feat, S.k);
     S.changes = ch;
     const T = settings.threshold;
-    const r = BV.findMove(base, ch.bySquare, { threshold: T, occ: S.occ, allowDouble: true });
+    const r = BV.findMove(base, ch.bySquare, { threshold: T, occ: S.occ, allowDouble: true , classOf: aiClassOf() });
     debugLog.push({
       t: Math.round(video.currentTime * 10) / 10, type: r.type,
       moves: r.moves ? r.moves.map(m => m.san) : [], fast: fast.map(m => m.san),
@@ -601,6 +715,12 @@
     const fastOk = fs && fs.fits && fs.unexplained <= 1 && fs.noise <= 3 && fastBetter;
 
     if (fastOk) {
+      // Записанное подтвердилось. Нет ли ещё хода среди оставшихся (слабых) изменений?
+      // Например, чёрная пешка на тёмных клетках меняет картинку слабо.
+      const r2 = BV.findMove(S.chess, BV.squareChanges(S.ref, feat, S.k).bySquare, { threshold: T, occ: S.occ, allowDouble: false , classOf: aiClassOf() });
+      if (r2.type === 'move' && !r2.relaxed) {
+        for (const m of r2.moves) applyMove({ from: m.from, to: m.to, promotion: m.promotion }, 'camera');
+      }
       setBase(feat);
       S.warn = null;
     } else if (r.type === 'move') {
@@ -630,9 +750,9 @@
       // С прошлой проверкой не сходится (например, после быстрых ходов успели сделать ещё один).
       // Сравним с рабочим эталоном — доской после уже записанных ходов.
       const r2 = fast.length
-        ? BV.findMove(S.chess, BV.squareChanges(S.ref, feat, S.k).bySquare, { threshold: T, occ: S.occ, allowDouble: true })
+        ? BV.findMove(S.chess, BV.squareChanges(S.ref, feat, S.k).bySquare, { threshold: T, occ: S.occ, allowDouble: true , classOf: aiClassOf() })
         : { type: 'unclear' };
-      if (r2.type === 'move') {
+      if (r2.type === 'move' && !r2.weak) {
         for (const m of r2.moves) applyMove({ from: m.from, to: m.to, promotion: m.promotion }, 'camera');
         setBase(feat);
       } else if (r2.type === 'none' || fast.length > 2) {
@@ -1393,5 +1513,22 @@
     motionLog,
     moves: moveLog,
     ai,
+    /** Начать запись с произвольной позиции (FEN) и известной ориентации доски. */
+    startFrom(fen, k) {
+      const c = new Chess();
+      if (!c.load(fen)) return false;
+      S.chess = c;
+      S.times = [];
+      S.lastMove = [];
+      S.k = k & 3;
+      S.kManual = true;
+      S.ref = null;
+      S.fullRef = null;
+      tracker.reset();
+      S.phase = 'ready';
+      renderBoard();
+      renderMoves();
+      return true;
+    },
   };
 })();
