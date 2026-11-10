@@ -349,3 +349,11 @@ button { cursor: pointer; }
   .fields { grid-template-columns: 1fr; }
   .btn-row { grid-template-columns: 1fr; }
 }
+
+/* Отправка отчёта на GitHub */
+.gh-progress { height: 6px; border-radius: 3px; background: var(--line, #2a2a2e); overflow: hidden; margin-top: 8px; }
+.gh-progress > div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+.gh-setup { margin: 10px 0; }
+.gh-setup summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+.gh-setup ol { padding-left: 18px; margin: 8px 0; }
+.gh-setup .field { margin-bottom: 8px; }
