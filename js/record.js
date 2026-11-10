@@ -15,7 +15,7 @@
 
   /* ---------- Константы и утилиты ---------- */
 
-  const APP_VERSION = '10 · отчёты кнопкой на GitHub';
+  const APP_VERSION = '11 · отчёты на GitHub: адрес вписан, токен по ссылке';
   const TICK_MS = 33;      // ~30 кадров/с
   const SETTLE_MS = 600;   // полная проверка, когда вся доска неподвижна
   const PROC_W = 640;
@@ -1708,10 +1708,40 @@
   // откуда их забирает разработчик. Размер видео не ограничен чатом: большие делим на части.
   const GH_API = 'https://api.github.com';
   const GH_PART = 15 * 1024 * 1024;
+  // Адрес репозитория для отчётов можно вписать сюда. Токен — нельзя: код сайта открыт всем,
+  // а GitHub сам отзывает токены, попавшие в открытый репозиторий.
+  const GH_DEFAULT_REPO = 'MisterFoxxy/live-chessboard-reports';
   const gh = {
-    get repo() { return store.get('vc_gh_repo', ''); },
+    get repo() { return store.get('vc_gh_repo', '') || GH_DEFAULT_REPO; },
     get token() { return store.get('vc_gh_token', ''); },
   };
+
+  /** Просим браузер не стирать данные сайта (иначе Safari может удалить их через неделю без визитов). */
+  function keepStorage() {
+    try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); } catch (e) { /* нет API */ }
+  }
+
+  /**
+   * Ссылка вида record.html#gh=ТОКЕН (можно с &repo=владелец/имя) сохраняет токен на телефоне и
+   * сразу убирает его из адресной строки. Такую ссылку удобно держать в заметках или закладках:
+   * если телефон сотрёт данные сайта, достаточно открыть её снова.
+   */
+  function ghTokenFromLink() {
+    const h = location.hash.replace(/^#/, '');
+    if (!/(^|&)gh=/.test(h)) return;
+    const p = new URLSearchParams(h);
+    const token = (p.get('gh') || '').trim(), repo = (p.get('repo') || '').trim();
+    if (token) store.set('vc_gh_token', token);
+    if (repo) store.set('vc_gh_repo', repo);
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* ignore */ }
+    keepStorage();
+    if (token) setTimeout(() => toast('Токен для отчётов сохранён на этом телефоне'), 300);
+  }
+
+  function ghRestoreLink() {
+    const base = location.origin + location.pathname;
+    return base + '#gh=' + encodeURIComponent(gh.token) + (gh.repo !== GH_DEFAULT_REPO ? '&repo=' + encodeURIComponent(gh.repo) : '');
+  }
 
   function blobToBase64(blob) {
     return new Promise((resolve, reject) => {
@@ -1950,13 +1980,26 @@
     $('#btnShare').addEventListener('click', () => share($('#pgnOut').value));
     $('#btnDebugVideo').addEventListener('click', () => { const f = debugVideoFile(); if (f) saveFile(f); });
     $('#btnDebugLog').addEventListener('click', () => saveFile(debugLogFile()));
-    $('#ghRepo').value = gh.repo;
-    $('#ghToken').value = gh.token ? '••••••••' : '';
+    const ghFill = () => { $('#ghRepo').value = gh.repo; $('#ghToken').value = gh.token ? '••••••••' : ''; };
+    ghTokenFromLink();
+    ghFill();
+    // ссылку могли открыть во вкладке, где приложение уже открыто
+    window.addEventListener('hashchange', () => { ghTokenFromLink(); ghFill(); });
+    $('#ghLink').addEventListener('click', async () => {
+      if (!gh.token) { $('#ghInfo').textContent = 'Сначала сохраните токен.'; return; }
+      const link = ghRestoreLink();
+      try {
+        await navigator.clipboard.writeText(link);
+        $('#ghInfo').textContent = 'Ссылка скопирована. Сохраните её в Заметках (не пересылайте никому): если телефон сотрёт данные сайта, откройте её — токен восстановится.';
+      } catch (e) {
+        prompt('Скопируйте и сохраните ссылку (не пересылайте никому):', link);
+      }
+    });
     $('#ghSave').addEventListener('click', async () => {
       const repo = $('#ghRepo').value.trim().replace(/^https?:\/\/github\.com\//, '').replace(/\/+$/, '');
       const token = $('#ghToken').value.trim();
       store.set('vc_gh_repo', repo);
-      if (token && !/^•+$/.test(token)) store.set('vc_gh_token', token);
+      if (token && !/^•+$/.test(token)) { store.set('vc_gh_token', token); keepStorage(); }
       $('#ghRepo').value = repo;
       $('#ghToken').value = gh.token ? '••••••••' : '';
       $('#ghInfo').textContent = 'Проверяю доступ…';
