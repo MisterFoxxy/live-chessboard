@@ -6,7 +6,8 @@
   'use strict';
 
   const BV = window.BoardVision;
-  if (typeof Chess === 'undefined' || !BV) {
+  const AI = window.SquareAI;
+  if (typeof Chess === 'undefined' || !BV || !AI) {
     document.body.innerHTML = '<p style="padding:24px;color:#fff">Не удалось загрузить скрипты. Проверьте интернет и обновите страницу.</p>';
     return;
   }
@@ -86,7 +87,7 @@
   /* ---------- Настройки ---------- */
 
   const settings = Object.assign(
-    { threshold: 14, fastMs: 120, sound: true, heatmap: false },
+    { threshold: 14, fastMs: 120, sound: true, heatmap: false, ai: true },
     store.get('vc_settings', {}));
   const saveSettings = () => store.set('vc_settings', settings);
 
@@ -98,6 +99,7 @@
   const proc = document.createElement('canvas');
   const pctx = proc.getContext('2d', { willReadFrequently: true });
   const tracker = new BV.MotionTracker({ settleMs: SETTLE_MS });
+  const ai = new AI.SquareAI();
   const debugLog = [];
   const motionLog = [];
   const moveLog = [];
@@ -126,8 +128,11 @@
     fullRef: null,       // эталон на момент последней полной проверки
     basePly: 0,          // сколько полуходов было на момент fullRef
     recent: new Set(),   // клетки недавних ходов: их эталон мог устареть
+    snaps: [],           // снимки эталона после быстрых ходов: {ply, ref}
     onset: {},           // клетка → когда начала отличаться от эталона
     empty: { feat: null, known: new Set() }, // как выглядят пустые клетки (по номерам клеток кадра)
+    aiP: null,           // вероятности ИИ по клеткам кадра: [пусто, белая, чёрная, рука]
+    aiFrame: 0,
     changes: null,
     handOver: false,
     warn: null,
@@ -341,6 +346,7 @@
       }
     }
     updateStatus();
+    updateAIInfo();
     drawOverlay();
     S.tickMs = S.tickMs * 0.9 + (performance.now() - t0) * 0.1;
   }
@@ -378,6 +384,7 @@
     S.fullRef = BV.cloneFeatures(feat);
     S.ref = BV.cloneFeatures(feat);
     S.basePly = S.chess.history().length;
+    S.snaps = [];
     S.recent.clear();
     S.onset = {};
     // Запоминаем, как выглядят пустые клетки, — это помогает отличить «фигура ушла» от «пришла».
@@ -387,24 +394,70 @@
       if (!S.chess.get(sq)) { const cell = BV.squareToCell(sq, S.k); cells.push(cell); S.empty.known.add(cell); }
     }
     BV.copyCells(S.empty.feat, feat, cells);
+    // Доска совпадает с цифровой — каждая клетка становится размеченным примером для ИИ.
+    if (settings.ai) {
+      const norm = AI.boardNorm(feat);
+      for (const sq of BV.SQUARES) {
+        const piece = S.chess.get(sq), cell = BV.squareToCell(sq, S.k);
+        ai.add(AI.describe(feat, cell, isLight(sq), norm), piece ? (piece.color === 'w' ? AI.WHITE : AI.BLACK) : AI.EMPTY);
+      }
+    }
+  }
+
+  const isLight = sq => ('abcdefgh'.indexOf(sq[0]) + +sq[1]) % 2 === 0;
+
+  /** ИИ: дообучение и оценка всех клеток текущего кадра. */
+  function runAI(feat) {
+    if (!settings.ai) { S.aiP = null; return; }
+    if (ai.count()) ai.train(6);
+    if (!ai.ready()) { S.aiP = null; return; }
+    const norm = AI.boardNorm(feat), probs = new Array(64);
+    for (const sq of BV.SQUARES) {
+      const cell = BV.squareToCell(sq, S.k);
+      probs[cell] = ai.predict(AI.describe(feat, cell, isLight(sq), norm));
+    }
+    S.aiP = probs;
+  }
+
+  /** Примеры «рука»: клетки, по которым сейчас движется что-то, сильно непохожее на эталон. */
+  function collectHand(feat, ch, t) {
+    if (!settings.ai || !tracker.moving || (S.aiFrame++ % 2)) return;
+    const T = settings.threshold, norm = AI.boardNorm(feat), cand = [];
+    for (const sq of BV.SQUARES) {
+      const cell = BV.squareToCell(sq, S.k);
+      if (tracker.since[cell] === t && ch.bySquare[sq] >= T * 3) cand.push([sq, cell]);
+    }
+    for (let i = 0; i < 2 && cand.length; i++) {
+      const [sq, cell] = cand.splice(Math.floor(Math.random() * cand.length), 1)[0];
+      ai.add(AI.describe(feat, cell, isLight(sq), norm), AI.HAND);
+    }
   }
 
   function resetEmpty() {
     S.empty = { feat: null, known: new Set() };
   }
 
-  /** Сколько клеток ходов не сходятся с ожидаемым «пусто/занято» после этих ходов. */
-  function occupancyMismatch(position, moves, emptyDiff) {
-    if (!emptyDiff) return 0;
+  /** Клетки, содержимое которых отличается в двух позициях. */
+  function netSquares(a, b) {
+    const out = [];
+    for (const sq of BV.SQUARES) {
+      const x = a.get(sq), y = b.get(sq);
+      if ((x ? x.color + x.type : '') !== (y ? y.color + y.type : '')) out.push(sq);
+    }
+    return out;
+  }
+
+  /** Сколько клеток не сходятся с ожидаемым «пусто/занято» в позиции. */
+  function occupancyMismatch(position, touched, emptyDiff) {
     const T = settings.threshold;
-    const touched = new Set();
-    for (const m of moves) for (const q of BV.squaresOfMove(m)) touched.add(q);
     let bad = 0;
     for (const q of touched) {
       const cell = BV.squareToCell(q, S.k);
-      if (!S.empty.known.has(cell)) continue;
-      const d = emptyDiff[cell];
-      if (position.get(q) ? d < T * 0.8 : d > T * 1.5) bad++;
+      const piece = position.get(q);
+      if (emptyDiff && S.empty.known.has(cell)) {
+        const d = emptyDiff[cell];
+        if (piece ? d < T * 0.8 : d > T * 1.5) bad++;
+      }
     }
     return bad;
   }
@@ -448,15 +501,32 @@
       onset[sq] = S.onset[sq] != null ? S.onset[sq] : t;
     }
     ensureOcc();
-    const m = BV.findFastMove(S.chess, ch.bySquare, {
-      threshold: T, occ: S.occ, stillMs, lastMotion, onset, fastMs: settings.fastMs, ignore: S.recent,
+    collectHand(feat, ch, t);
+    runAI(feat);
+    const aiP = S.aiP, handKnown = !!aiP && ai.knowsHand();
+    const classOf = sq => (aiP ? aiP[BV.squareToCell(sq, S.k)] : null);
+    // Клетка готова, если неподвижна сама и её соседи; если ИИ уверен, что на клетке
+    // не рука, — достаточно её собственной неподвижности (рука соседа не мешает).
+    const stillOk = sq => {
+      const cell = BV.squareToCell(sq, S.k);
+      if (t - tracker.since[cell] < settings.fastMs) return false;
+      if (stillMs[sq] >= settings.fastMs) return true;
+      return handKnown && aiP[cell][AI.HAND] < 0.15;
+    };
+    const found = BV.findFastMove(S.chess, ch.bySquare, {
+      threshold: T, occ: S.occ, stillMs, stillOk, lastMotion, onset, now: t, fastMs: settings.fastMs, ignore: S.recent,
+      classOf: handKnown ? classOf : null,
+      aiVeto: handKnown && ai.count(AI.EMPTY) + ai.count(AI.WHITE) + ai.count(AI.BLACK) >= 192,
       trace: window.vcTrace,
     });
-    if (!m) return;
-    const played = applyMove({ from: m.from, to: m.to, promotion: m.promotion }, 'fast');
-    if (!played) return;
+    if (!found) return;
+    const moveSq = [];
+    for (const m of found) {
+      const played = applyMove({ from: m.from, to: m.to, promotion: m.promotion }, 'fast');
+      if (!played) return;
+      moveSq.push(...BV.squaresOfMove(played));
+    }
     // Эталон обновляем только на клетках хода и тех клетках в их «тени», что уже неподвижны.
-    const moveSq = BV.squaresOfMove(played);
     const touched = new Set(moveSq);
     for (const sq of moveSq) for (const o of S.occ[sq] || []) touched.add(o);
     const cells = [];
@@ -466,6 +536,8 @@
       delete S.onset[sq];
     }
     BV.copyCells(S.ref, feat, cells);
+    S.snaps.push({ ply: S.chess.history().length, ref: BV.cloneFeatures(S.ref) });
+    if (S.snaps.length > 8) S.snaps.shift();
     S.warn = null;
   }
 
@@ -483,10 +555,17 @@
   function onSettled(feat) {
     ensureOcc();
     const hist = S.chess.history({ verbose: true });
-    const fast = hist.slice(S.basePly);
+    // Проверяем не больше двух последних ходов: если быстрых ходов накопилось больше,
+    // сравниваем со снимком эталона, сделанным перед двумя последними.
+    let bPly = S.basePly, bRef = S.fullRef;
+    if (hist.length - bPly > 2) {
+      const snap = S.snaps.find(x => x.ply === hist.length - 2) || S.snaps.find(x => x.ply === hist.length - 1);
+      if (snap) { bPly = snap.ply; bRef = snap.ref; }
+    }
+    const fast = hist.slice(bPly);
     const base = new Chess();
-    for (const m of hist.slice(0, S.basePly)) base.move(m.san);
-    const ch = BV.squareChanges(S.fullRef, feat, S.k);
+    for (const m of hist.slice(0, bPly)) base.move(m.san);
+    const ch = BV.squareChanges(bRef, feat, S.k);
     S.changes = ch;
     const T = settings.threshold;
     const r = BV.findMove(base, ch.bySquare, { threshold: T, occ: S.occ, allowDouble: true });
@@ -500,16 +579,24 @@
 
     // Быстро записанные ходы — гипотеза: оставляем их, если их клетки действительно
     // изменились и они объясняют картину не хуже, чем результат проверки.
+    // Сравниваем итоговые позиции: должны измениться клетки, где содержимое стало другим.
     const opts = { threshold: T, occ: S.occ };
-    const fs = fast.length ? BV.scoreMoves(fast, ch.bySquare, opts) : null;
-    const rs = r.type === 'move' ? BV.scoreMoves(r.moves, ch.bySquare, opts) : null;
+    const netF = netSquares(base, S.chess);
+    const fs = fast.length ? BV.scoreSquares(netF, ch.bySquare, opts) : null;
+    let rs = null, posR = null, netR = null;
+    if (r.type === 'move') {
+      posR = new Chess(base.fen());
+      for (const m of r.moves) posR.move({ from: m.from, to: m.to, promotion: m.promotion });
+      netR = netSquares(base, posR);
+      rs = BV.scoreSquares(netR, ch.bySquare, opts);
+    }
     let fastBetter = true;
     if (rs) {
       const emptyDiff = S.empty.feat ? BV.cellDiff(feat, S.empty.feat) : null;
-      const posR = new Chess(base.fen());
-      for (const m of r.moves) posR.move({ from: m.from, to: m.to, promotion: m.promotion });
-      const fi = occupancyMismatch(S.chess, fast, emptyDiff), ri = occupancyMismatch(posR, r.moves, emptyDiff);
-      fastBetter = fi < ri || (fi === ri && fs && fs.unexplained <= rs.unexplained);
+      const fi = occupancyMismatch(S.chess, netF, emptyDiff), ri = occupancyMismatch(posR, netR, emptyDiff);
+      // При равенстве лучше то объяснение, где изменения объяснены самими ходами, а не «тенью».
+      fastBetter = !!fs && (fi < ri || (fi === ri && (fs.unexplained < rs.unexplained ||
+        (fs.unexplained === rs.unexplained && fs.direct <= rs.direct))));
     }
     const fastOk = fs && fs.fits && fs.unexplained <= 1 && fs.noise <= 3 && fastBetter;
 
@@ -539,14 +626,24 @@
       } else if (ch.max < T * 0.6) {
         setBase(feat); // фигуры не двигались — обновим эталон, чтобы не копить дрейф освещения
       }
-    } else if (fast.length > 2) {
-      setBase(feat); // слишком длинная цепочка, чтобы перепроверить: принимаем как есть
-    } else if (!fast.length && r.changed.length > 1) {
-      // Одна изменившаяся клетка — скорее всего, фигуру ещё держат в руке: просто ждём.
-      S.warn = {
-        text: 'Не понял ход. Поправьте фигуры или сделайте ход на цифровой доске.',
-        until: Date.now() + 6000,
-      };
+    } else {
+      // С прошлой проверкой не сходится (например, после быстрых ходов успели сделать ещё один).
+      // Сравним с рабочим эталоном — доской после уже записанных ходов.
+      const r2 = fast.length
+        ? BV.findMove(S.chess, BV.squareChanges(S.ref, feat, S.k).bySquare, { threshold: T, occ: S.occ, allowDouble: true })
+        : { type: 'unclear' };
+      if (r2.type === 'move') {
+        for (const m of r2.moves) applyMove({ from: m.from, to: m.to, promotion: m.promotion }, 'camera');
+        setBase(feat);
+      } else if (r2.type === 'none' || fast.length > 2) {
+        setBase(feat); // доска совпадает с записанным (или цепочка слишком длинная, чтобы перепроверить)
+      } else if (!fast.length && r.changed.length > 1) {
+        // Одна изменившаяся клетка — скорее всего, фигуру ещё держат в руке: просто ждём.
+        S.warn = {
+          text: 'Не понял ход. Поправьте фигуры или сделайте ход на цифровой доске.',
+          until: Date.now() + 6000,
+        };
+      }
     }
   }
 
@@ -707,6 +804,18 @@
     $('#camMotion').hidden = !(S.handOver && (S.phase === 'ready' || S.phase === 'recording'));
   }
 
+  let aiInfoAt = 0;
+  function updateAIInfo() {
+    if (performance.now() - aiInfoAt < 1000) return;
+    aiInfoAt = performance.now();
+    const el = $('#aiInfo');
+    if (!settings.ai) { el.textContent = 'ИИ выключен: работают только правила.'; return; }
+    const n = ai.count();
+    if (!n) { el.textContent = 'Нейросеть начнёт учиться, когда доска будет распознана.'; return; }
+    el.textContent = `Обучено на ${n} клетках (рука: ${ai.count(AI.HAND)}), ` +
+      (ai.ready() ? `точность ${Math.round(ai.accuracy() * 100)}%.` : 'ещё учится…');
+  }
+
   function updatePlayButton() {
     const b = $('#btnPlay');
     b.hidden = S.source !== 'file';
@@ -742,6 +851,15 @@
         ctx.closePath();
       };
 
+      if (settings.heatmap && S.aiP) {
+        for (let cell = 0; cell < 64; cell++) {
+          const p = S.aiP[cell];
+          if (!p || p[AI.HAND] < 0.5) continue;
+          ctx.fillStyle = `rgba(60,140,255,${0.25 + 0.35 * p[AI.HAND]})`;
+          cellPath(cell >> 3, cell & 7);
+          ctx.fill();
+        }
+      }
       if (settings.heatmap && S.changes) {
         for (let cell = 0; cell < 64; cell++) {
           const a = Math.min(0.65, S.changes.grid[cell] / (settings.threshold * 2));
@@ -955,6 +1073,8 @@
     S.ref = null;
     S.fullRef = null;
     resetEmpty();
+    ai.reset();
+    S.aiP = null;
     S.changes = null;
     S.H = null;
     S.kManual = false;
@@ -1233,6 +1353,8 @@
       saveSettings();
     });
     $('#setSound').addEventListener('change', e => { settings.sound = e.target.checked; saveSettings(); });
+    $('#setAI').checked = settings.ai;
+    $('#setAI').addEventListener('change', e => { settings.ai = e.target.checked; saveSettings(); if (!settings.ai) S.aiP = null; });
     $('#setHeatmap').addEventListener('change', e => { settings.heatmap = e.target.checked; saveSettings(); drawOverlay(); });
 
     window.addEventListener('resize', layoutCam);
@@ -1270,5 +1392,6 @@
     log: debugLog,
     motionLog,
     moves: moveLog,
+    ai,
   };
 })();

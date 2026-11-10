@@ -126,6 +126,8 @@
           <input id="setFast" type="range" min="60" max="600" step="20"/>
           <small>Сколько клетка должна быть неподвижной после того, как вы отпустили фигуру. Меньше — быстрее, больше — надёжнее.</small>
         </label>
+        <label class="toggle"><span>ИИ: учится узнавать руку и фигуры</span><input id="setAI" type="checkbox"/></label>
+        <small class="ai-info" id="aiInfo">Нейросеть обучается прямо во время партии на вашей доске.</small>
         <label class="toggle"><span>Звук и вибрация при ходе</span><input id="setSound" type="checkbox"/></label>
         <label class="toggle"><span>Показывать изменения клеток</span><input id="setHeatmap" type="checkbox"/></label>
       </details>
@@ -193,6 +195,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js" crossorigin="anonymous"></script>
 <script src="js/board-vision.js"></script>
+<script src="js/square-ai.js"></script>
 <script src="js/record.js"></script>
 </body>
 </html>

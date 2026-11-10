@@ -536,11 +536,40 @@
     return c;
   }
 
-  /** Ход — первая половина рокировки «ладьёй вперёд» (ладья с угла, когда рокировка возможна)? */
+  /**
+   * То же, что scoreMoves, но по готовому набору клеток, которые должны были измениться
+   * (например, по разнице итоговых позиций: клетка, где пешка появилась и была тут же побита,
+   * в итоге не меняется).
+   */
+  function scoreSquares(squares, changes, opts) {
+    const T = opts.threshold || 14;
+    const all = Object.keys(changes);
+    const strong = all.filter(s => changes[s] >= T * 1.6);
+    const set = new Set(squares), covered = new Set(squares);
+    if (opts.occ) for (const s of squares) for (const o of opts.occ[s] || []) covered.add(o);
+    let min = Infinity;
+    for (const s of set) min = Math.min(min, changes[s] || 0);
+    return {
+      set, min,
+      fits: squares.every(s => (changes[s] || 0) >= T * 0.7),
+      direct: strong.filter(s => !set.has(s)).length,
+      unexplained: strong.filter(s => !covered.has(s)).length,
+      noise: all.filter(s => changes[s] >= T && !covered.has(s)).length,
+    };
+  }
+
+  /**
+   * Ход может оказаться первой половиной рокировки (когда она возможна): ладья с угла
+   * («ладьёй вперёд») или король на соседнюю клетку в сторону рокировки
+   * (король уже ушёл с e1, а ладья встала на f1 раньше, чем видна клетка g1).
+   */
   function castlingPrefix(legal, m) {
-    if (m.piece !== 'r') return false;
     const rank = m.color === 'w' ? '1' : '8';
-    const side = m.from === 'h' + rank ? 'k' : m.from === 'a' + rank ? 'q' : null;
+    let side = null;
+    if (m.piece === 'r') side = m.from === 'h' + rank ? 'k' : m.from === 'a' + rank ? 'q' : null;
+    if (m.piece === 'k' && m.from === 'e' + rank && m.flags.indexOf('k') < 0 && m.flags.indexOf('q') < 0) {
+      side = m.to === 'f' + rank ? 'k' : m.to === 'd' + rank ? 'q' : null;
+    }
     return !!side && legal.some(x => x.flags.indexOf(side) >= 0);
   }
 
@@ -549,24 +578,31 @@
    * Ход принимается, когда все его клетки изменились и уже неподвижны fastMs, причём
    * на клетке назначения что-то происходило уже после того, как фигуру подняли с исходной
    * (иначе это ещё «фигура в руке»: например, сначала сняли побитую фигуру).
-   * Клетки, над которыми ещё движется рука, не мешают.
+   * Клетки, над которыми ещё движется рука, не мешают. Если соперник ответил так быстро,
+   * что изменения сливаются, распознаётся сразу пара ходов (ход + ответ).
    * opts: threshold, occ, stillMs {square: мс неподвижности}, lastMotion {square: время
    *       последнего движения}, onset {square: когда клетка начала отличаться от эталона},
-   *       fastMs, ignore (Set клеток с возможно устаревшим эталоном), maxOther.
-   * Возвращает verbose-ход chess.js или null.
+   *       fastMs, ignore (Set клеток с возможно устаревшим эталоном), maxOther,
+   *       stillOk(square) — своя проверка неподвижности (вместо stillMs ≥ fastMs),
+   *       classOf(square) — вероятности ИИ [пусто, белая, чёрная, рука] или null,
+   *       aiVeto — ИИ обучен достаточно, чтобы запрещать ходы, с которыми он уверенно не согласен.
+   * Возвращает массив verbose-ходов chess.js (1 или 2) или null.
    */
   function findFastMove(chess, changes, opts) {
     const T = opts.threshold || 14;
     const fastMs = opts.fastMs || 120;
-    const still = s => opts.stillMs[s] >= fastMs;
+    const stillOk = opts.stillOk || (s => opts.stillMs[s] >= fastMs);
     const ignore = opts.ignore || new Set();
+    const cls = opts.classOf || (() => null);
+    const isHand = s => { const p = cls(s); return !!p && p[3] >= 0.5; };
     const all = Object.keys(changes);
     // Готовые клетки: изменились и неподвижны. Клетки недавних ходов (ignore) могут
     // участвовать в ходе (взятие в ответ), но не считаются «лишними» изменениями.
-    const ready = all.filter(s => still(s) && changes[s] >= T);
+    const ready = all.filter(s => stillOk(s) && changes[s] >= T);
     if (opts.trace) opts.trace.reasons.push('ready=' + ready.join(','));
     if (ready.length < 2) return null;
-    const considered = ready.filter(s => !ignore.has(s));
+    const readySet = new Set(ready);
+    const considered = ready.filter(s => !ignore.has(s) && !isHand(s));
     const ctx = {
       occ: opts.occ || null,
       changed: considered,
@@ -587,46 +623,125 @@
       }
       return seen;
     };
+    // Пятна изменений вокруг клеток хода должны целиком объясняться ходом (ходами):
+    // иначе это рука, лежащая или зависшая над этими клетками.
+    const blobLeft = squares => {
+      const explained = new Set(squares);
+      for (const q of squares) for (const o of (ctx.occ && ctx.occ[q]) || []) explained.add(o);
+      const left = new Set();
+      for (const q of squares) for (const b of blob(q)) if (!explained.has(b)) left.add(b);
+      return Array.from(left);
+    };
+    // Лишние клетки рядом с ходом — это уже поставленная фигура соперника (он начал отвечать)?
+    // Решаем по ИИ: там фигура цвета соперника, и туда есть легальный ответ.
+    const pendingReply = (m1, cells) => {
+      const opp = m1.color === 'w' ? 2 : 1;
+      if (!cells.every(c => { const p = cls(c); return p && p[opp] >= 0.6; })) return false;
+      // ответ начался после того, как взяли фигуру для этого хода
+      const lifted = parts(m1).lifted;
+      if (!cells.every(c => opts.onset[c] >= lifted - 100)) return false;
+      if (!chess.move({ from: m1.from, to: m1.to, promotion: m1.promotion })) return false;
+      const reach = new Set();
+      for (const r of chess.moves({ verbose: true })) {
+        reach.add(r.to);
+        for (const o of (ctx.occ && ctx.occ[r.to]) || []) reach.add(o);
+      }
+      chess.undo();
+      return cells.every(c => reach.has(c));
+    };
+    // ИИ уверенно видит на клетках хода не то, что должно быть после хода?
+    const aiDisagrees = moves => {
+      if (!opts.aiVeto) return false;
+      let played = 0, bad = false;
+      for (const m of moves) { if (chess.move({ from: m.from, to: m.to, promotion: m.promotion })) played++; }
+      for (const m of moves) {
+        for (const q of squaresOfMove(m)) {
+          const p = cls(q);
+          if (!p) continue;
+          const piece = chess.get(q), exp = piece ? (piece.color === 'w' ? 1 : 2) : 0;
+          let best = 0;
+          for (let c = 1; c < 4; c++) if (p[c] > p[best]) best = c;
+          if (best !== exp && best !== 3 && p[best] >= 0.9) bad = true;
+        }
+      }
+      for (let i = 0; i < played; i++) chess.undo();
+      return bad;
+    };
     const minCarry = opts.minCarryMs != null ? opts.minCarryMs : 100;
-    const legal = chess.moves({ verbose: true });
-    const cands = [];
     const trace = opts.trace && opts.trace.san;
     const why = (m, reason) => { if (trace === m.san) opts.trace.reasons.push(reason); };
-    for (const m of uniqueMoves(legal)) {
-      const sq = squaresOfMove(m);
-      if (!sq.every(s => still(s) && changes[s] >= T)) {
-        why(m, 'not-ready ' + sq.map(s => s + ':' + Math.round(changes[s]) + '/' + Math.round(opts.stillMs[s])).join(' '));
-        continue;
-      }
+    const parts = m => {
       const rank = m.color === 'w' ? '1' : '8';
       const froms = [m.from], dests = [m.to];
       if (m.flags.indexOf('k') >= 0) { froms.push('h' + rank); dests.push('f' + rank); }
       if (m.flags.indexOf('q') >= 0) { froms.push('a' + rank); dests.push('d' + rank); }
-      // Фигуру сначала подняли, потом поставили (а не рука накрыла обе клетки разом).
-      const lifted = Math.max(...froms.map(s => opts.onset[s]));
-      if (!dests.every(s => opts.lastMotion[s] >= lifted + minCarry)) { why(m, 'carry'); continue; }
-      // Пятна изменений вокруг клеток хода должны целиком объясняться ходом:
-      // иначе это рука, лежащая или зависшая над этими клетками.
-      const explained = new Set(sq);
-      for (const q of sq) for (const o of (ctx.occ && ctx.occ[q]) || []) explained.add(o);
-      let clean = true;
-      for (const q of sq) {
-        for (const b of blob(q)) if (!explained.has(b)) { clean = false; break; }
-        if (!clean) break;
+      return { froms, dests, lifted: Math.max(...froms.map(s => opts.onset[s])) };
+    };
+    // Все клетки хода готовы, и фигуру сначала подняли, потом поставили
+    // (а не рука накрыла обе клетки разом).
+    const ready1 = m => {
+      const sq = squaresOfMove(m);
+      if (!sq.every(s => readySet.has(s))) {
+        why(m, 'not-ready ' + sq.map(s => s + ':' + Math.round(changes[s]) + '/' + Math.round(opts.stillMs[s])).join(' '));
+        return false;
       }
-      if (!clean) { why(m, 'blob'); continue; }
-      if (castlingPrefix(legal, m)) continue;
-      cands.push(candidate([m], changes, ctx));
+      const p = parts(m);
+      if (!p.dests.every(s => opts.lastMotion[s] >= p.lifted + minCarry)) { why(m, 'carry'); return false; }
+      return true;
+    };
+    const pick = (cands, label) => {
+      if (!cands.length) return null;
+      cands.sort((a, b) => (better(a, b) ? -1 : 1));
+      const best = cands[0], second = cands[1];
+      // Неподвижные изменения вне хода: если их много — на доске лежит рука, ждём.
+      if (best.noise > (opts.maxOther != null ? opts.maxOther : 6)) { why(best.moves[0], label + 'noise ' + best.noise); return null; }
+      // Неоднозначно (два варианта объясняют почти одинаково) — пусть решит полная проверка.
+      if (second && second.unexplained === best.unexplained && second.min >= best.min * 0.8 &&
+          !isCastle(best)) { why(best.moves[0], label + 'ambiguous vs ' + second.moves.map(m => m.san).join(' ')); return null; }
+      if (aiDisagrees(best.moves)) { why(best.moves[0], label + 'ai-disagrees'); return null; }
+      return best.moves;
+    };
+
+    // Есть неподвижные изменения, начавшиеся раньше этого хода и им не объяснённые? Значит,
+    // предыдущий ход ещё не записан (его закрыла рука) — этот ход пока не принимаем,
+    // чтобы не перепутать порядок. Очень старые (> 4 с) изменения не мешают.
+    const earlierPending = moves => {
+      const explained = new Set();
+      for (const m of moves) for (const q of squaresOfMove(m)) {
+        explained.add(q);
+        for (const o of (ctx.occ && ctx.occ[q]) || []) explained.add(o);
+      }
+      const lifted = Math.min(...moves.map(m => parts(m).lifted));
+      return ctx.changed.some(c => !explained.has(c) && opts.onset[c] < lifted - 150 &&
+        (opts.now == null || opts.onset[c] > opts.now - 4000));
+    };
+    const legal = chess.moves({ verbose: true });
+    const firsts = uniqueMoves(legal).filter(m => !castlingPrefix(legal, m) && ready1(m));
+    const singles = [];
+    for (const m of firsts) {
+      const left = blobLeft(squaresOfMove(m));
+      if (left.length && !pendingReply(m, left)) { why(m, 'blob ' + left.join(',')); continue; }
+      if (earlierPending([m])) { why(m, 'earlier'); continue; }
+      singles.push(candidate([m], changes, ctx));
     }
-    if (!cands.length) return null;
-    cands.sort((a, b) => (better(a, b) ? -1 : 1));
-    const best = cands[0], second = cands[1];
-    // Неподвижные изменения вне хода: если их много — на доске лежит рука, ждём.
-    if (best.noise > (opts.maxOther != null ? opts.maxOther : 6)) { why(best.moves[0], 'noise ' + best.noise); return null; }
-    // Неоднозначно (два хода объясняют почти одинаково) — пусть решит полная проверка.
-    if (second && second.unexplained === best.unexplained && second.min >= best.min * 0.8 &&
-        !isCastle(best)) { why(best.moves[0], 'ambiguous vs ' + second.moves[0].san); return null; }
-    return best.moves[0];
+    const one = pick(singles, '');
+    if (one) return one;
+
+    // Ход и мгновенный ответ соперника.
+    const pairs = [];
+    for (const m1 of firsts) {
+      if (!chess.move({ from: m1.from, to: m1.to, promotion: m1.promotion })) continue;
+      const lifted1 = parts(m1).lifted, placed1 = Math.min(...parts(m1).dests.map(s => opts.onset[s]));
+      for (const m2 of uniqueMoves(chess.moves({ verbose: true }))) {
+        // Соперник берёт фигуру после того, как ход сделан (с небольшим запасом).
+        if (!ready1(m2) || parts(m2).lifted < lifted1 || placed1 > parts(m2).lifted + 300) continue;
+        const sq = new Set(squaresOfMove(m1).concat(squaresOfMove(m2)));
+        if (blobLeft(Array.from(sq)).length || earlierPending([m1, m2])) continue;
+        pairs.push(candidate([m1, m2], changes, ctx));
+      }
+      chess.undo();
+    }
+    return pick(pairs, 'pair ');
   }
 
   /* ---------- Детектор «рука над доской / доска успокоилась» ---------- */
@@ -721,7 +836,7 @@
     squareToCell, cellToSquare,
     samplePlan, sampleWithPlan, sampleBoard, averageFeatures, cellDiff, cellStats,
     cloneFeatures, copyCells,
-    detectStartPosition, squareChanges, squaresOfMove, uniqueMoves, occlusionMap, findMove, findFastMove, scoreMoves,
+    detectStartPosition, squareChanges, squaresOfMove, uniqueMoves, occlusionMap, findMove, findFastMove, scoreMoves, scoreSquares,
     MotionTracker,
   };
 }));

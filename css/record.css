@@ -227,6 +227,7 @@ button { cursor: pointer; }
 .setting input[type=range] { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); }
 .toggle { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; }
 .toggle input { width: 22px; height: 22px; accent-color: var(--accent); }
+.ai-info { display: block; color: var(--muted); margin-top: 4px; }
 
 .panel { display: none; }
 .panel.active { display: block; }
