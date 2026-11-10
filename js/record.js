@@ -138,6 +138,10 @@
     refine: null,        // клетки последнего хода, которые надо переснять, когда рука уйдёт
     lastFast: null,      // последний быстрый ход: {ply, to, pre (эталон до хода), t} — для отмены «остановки в пути»
     onset: {},           // клетка → когда начала отличаться от эталона
+    firstChange: {},     // клетка → когда на ней впервые что-то замерло после проверки (порядок ходов)
+    quietAt: -1,         // какую паузу уже проверили
+    darkCal: null,       // порог «чёрная фигура» по тёмному уровню клетки
+    pending: new Set(),  // клетки, чей эталон устарел (менялись под рукой) — переснимаем, когда видны
     empty: { feat: null, known: new Set() }, // как выглядят пустые клетки (по номерам клеток кадра)
     aiP: null,           // вероятности ИИ по клеткам кадра: [пусто, белая, чёрная, рука]
     aiFrame: 0,
@@ -359,6 +363,7 @@
   const clk = { ms: 0, real: 0, video: 0 };
   function clock() {
     const now = performance.now();
+    if (S.manual) { clk.ms = video.currentTime * 1000; return clk.ms; } // покадровая проверка: время видео
     if (S.source === 'file' && !video.paused) {
       clk.ms += Math.max(0, (video.currentTime - clk.video) * 1000);
     } else if (clk.real) {
@@ -401,6 +406,7 @@
 
   function startLoop() {
     clearInterval(S.timer);
+    if (S.manual) return; // проверка по кадрам: тики вызывает vcDebug.step
     S.timer = setInterval(tick, TICK_MS);
   }
 
@@ -454,7 +460,8 @@
   }
 
   /** Новый эталон: доска сейчас совпадает с позицией на цифровой доске. */
-  function setBase(feat) {
+  function setBase(feat, hidden) {
+    hidden = hidden || [];
     S.fullRef = BV.cloneFeatures(feat);
     S.ref = BV.cloneFeatures(feat);
     S.basePly = S.chess.history().length;
@@ -463,17 +470,29 @@
     S.lastFast = null;
     S.recent.clear();
     S.onset = {};
+    S.firstChange = {};
+    // По проверенной позиции подбираем порог «на клетке чёрная фигура».
+    // Клетки под рукой (hidden): их эталон устарел — переснимем, когда рука уйдёт.
+    S.pending = new Set(hidden);
+    const cal = BV.calibrateDark(feat, cell => {
+      const sq = BV.cellToSquare(cell, S.k);
+      if (S.pending.has(sq)) return 'x';
+      const p = S.chess.get(sq);
+      return p ? p.color : '';
+    });
+    if (cal) S.darkCal = cal;
     // Запоминаем, как выглядят пустые клетки, — это помогает отличить «фигура ушла» от «пришла».
     if (!S.empty.feat) S.empty.feat = { n: feat.n, per: feat.per, data: new Float32Array(feat.data.length), mean: feat.mean };
     const cells = [];
     for (const sq of BV.SQUARES) {
-      if (!S.chess.get(sq)) { const cell = BV.squareToCell(sq, S.k); cells.push(cell); S.empty.known.add(cell); }
+      if (!S.chess.get(sq) && !S.pending.has(sq)) { const cell = BV.squareToCell(sq, S.k); cells.push(cell); S.empty.known.add(cell); }
     }
     BV.copyCells(S.empty.feat, feat, cells);
     // Доска совпадает с цифровой — каждая клетка становится размеченным примером для ИИ.
     if (settings.ai) {
       const norm = AI.boardNorm(feat);
       for (const sq of BV.SQUARES) {
+        if (S.pending.has(sq)) continue;
         const piece = S.chess.get(sq), cell = BV.squareToCell(sq, S.k);
         ai.add(AI.describe(feat, cell, isLight(sq), norm), piece ? (piece.color === 'w' ? AI.WHITE : AI.BLACK) : AI.EMPTY);
       }
@@ -582,6 +601,8 @@
       onset[sq] = S.onset[sq] != null ? S.onset[sq] : t;
     }
     ensureOcc();
+    trackFirstChange(feat, t);
+    if (quietCheck(feat, t)) return;
     if (revertInTransit(feat, t, stillMs)) return;
     refineRef(feat, ch, t, stillMs, lastMotion);
     absorbStale(feat, ch, stillMs);
@@ -626,6 +647,129 @@
     S.snaps.push({ ply: S.chess.history().length, ref: BV.cloneFeatures(S.ref) });
     if (S.snaps.length > 8) S.snaps.shift();
     S.warn = null;
+  }
+
+  /** Когда на клетке впервые что-то замерло после последней проверки (для порядка ходов). */
+  function trackFirstChange(feat, t) {
+    const T = settings.threshold;
+    const ch = BV.squareChanges(S.fullRef, feat, S.k).bySquare;
+    for (const sq of BV.SQUARES) {
+      if (S.firstChange[sq] != null || ch[sq] < T) continue;
+      const since = tracker.since[BV.squareToCell(sq, S.k)];
+      if (t - since >= 150) S.firstChange[sq] = since;
+    }
+  }
+
+  /*
+   * Короткая пауза: вся доска неподвижна QUIET_MS (рука могла и не уйти с доски, просто замерла
+   * или ушла на мгновение). Сравниваем доску с последней проверенной позицией и ищем цепочку
+   * ходов, которая объясняет картину. Так находятся ходы, которые быстрая фиксация пропустила
+   * или записала неверно (очень быстрая игра, чёрная фигура на тёмной клетке).
+   */
+  const QUIET_MS = 250;
+  const QUIET_MAX_MOVING = 6; // рука может лежать или шевелиться в углу доски — эти клетки не оцениваем
+  function quietCheck(feat, t) {
+    if (!S.fullRef) return false;
+    const movingCells = [];
+    let last = 0;
+    for (let c = 0; c < 64; c++) {
+      if (t - tracker.since[c] < QUIET_MS) movingCells.push(c);
+      else if (tracker.since[c] > last) last = tracker.since[c];
+    }
+    if (movingCells.length > QUIET_MAX_MOVING || S.quietAt === last) return false;
+    S.quietAt = last;
+    const mask = new Set();
+    for (const c of movingCells) {
+      const r = c >> 3, col = c & 7;
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          const rr = r + dr, cc = col + dc;
+          if (rr >= 0 && rr < 8 && cc >= 0 && cc < 8) mask.add(BV.cellToSquare(rr * 8 + cc, S.k));
+        }
+      }
+    }
+    const T = settings.threshold;
+    const hist = S.chess.history({ verbose: true });
+    const recorded = hist.slice(S.basePly);
+    const base = new Chess();
+    for (const m of hist.slice(0, S.basePly)) base.move(m.san);
+    const steady = mask.size ? feat : tracker.steadyFeatures();
+    // Клетки, менявшиеся под рукой при прошлой проверке, теперь видны — переснимаем их эталон.
+    if (S.pending.size) {
+      const moved = new Set();
+      for (const m of recorded) for (const q of BV.squaresOfMove(m)) moved.add(q);
+      const seen = Array.from(S.pending).filter(q => !mask.has(q) && !moved.has(q));
+      const cells = seen.map(q => BV.squareToCell(q, S.k));
+      BV.copyCells(S.fullRef, steady, cells);
+      BV.copyCells(S.ref, steady, cells);
+      for (const q of seen) S.pending.delete(q);
+      for (const q of S.pending) mask.add(q);
+    }
+    const ch = BV.squareChanges(S.fullRef, steady, S.k).bySquare;
+    const active = new Set(Object.keys(S.firstChange));
+    for (const sq of BV.SQUARES) if (ch[sq] >= T * 0.7) active.add(sq);
+    for (const sq of mask) active.add(sq);
+    for (const m of recorded) for (const q of BV.squaresOfMove(m)) active.add(q);
+    const cal = S.darkCal;
+    const colorOf = cal ? sq => {
+      const v = BV.darkLevel(steady, BV.squareToCell(sq, S.k)), m = cal.gap * 0.2;
+      return v < cal.thr - m ? 'b' : v > cal.thr + m ? 'n' : null;
+    } : null;
+    const t0 = performance.now();
+    const r = BV.findSequence(base, ch, {
+      threshold: T, occ: S.occ, active, order: S.firstChange, colorOf, mask,
+      recorded: recorded.map(m => m.san), maxPlies: 8, maxNodes: 2000,
+      probe: window.vcExpected ? [window.vcExpected.slice(S.basePly, S.basePly + Math.max(1, recorded.length, 0) + 0),
+        window.vcExpected.slice(S.basePly, S.basePly + 5)] : null,
+    });
+    const b = r.best;
+    if (!b) return false;
+    if (window.vcQuietTrace) {
+      const f = c => c ? `${c.san.join(' ')} [u${c.unexplained} b${c.bumped} i${c.indirect} v${c.unverified} m${c.missing} w${c.weak} c${c.conflict}${c.conflictAt.length ? '(' + c.conflictAt.join(',') + ')' : ''} n${c.noise}(${c.noiseAt.join(',')}) inv${c.inv} cost${c.cost}]` : '-';
+      window.vcQuietTrace.push(`${video.currentTime.toFixed(2)} mask ${Array.from(mask).join(',') || '-'} best ${f(b)} alt ${f(r.alt)} rec ${f(r.recorded)} ${(r.probes || []).map(p => 'probe ' + f(p)).join(' ')} nodes ${r.nodes} ${Math.round(performance.now() - t0)}ms top ` +
+        Object.entries(ch).sort((x, y) => y[1] - x[1]).slice(0, 8).map(([q, v]) => q + ':' + v.toFixed(0)).join(' '));
+    }
+    // Другая позиция объясняет картину почти так же (например, под рукой не видно, пешка
+    // пошла на c6 или конь): точку отсчёта не двигаем — решим, когда рука уйдёт.
+    let ambiguous = false;
+    if (r.alt && r.alt.cost <= b.cost + 0.5) {
+      const pa = new Chess(b.fen + ' 0 1'), pb = new Chess(r.alt.fen + ' 0 1');
+      const code = (pos, q) => { const p = pos.get(q); return p ? p.color + p.type : ''; };
+      ambiguous = BV.SQUARES.some(q => mask.has(q) && code(pa, q) !== code(pb, q));
+    }
+    const clean = !ambiguous && b.unexplained === 0 && b.missing === 0 && b.conflict === 0 && b.noise <= 2 + b.bumped && b.bumped <= 2;
+    if (!clean) return false;
+    // Исправляем, если найденное заметно лучше; или те же ходы в другом порядке — и порядок
+    // лучше сходится с тем, когда менялись клетки.
+    const rec = r.recorded;
+    const reorder = !!rec && !b.isRecorded && rec.fen === b.fen && b.inv < rec.inv && b.cost <= rec.cost + 0.5;
+    const fix = !b.isRecorded && (!rec || rec.cost > b.cost + 1 || reorder);
+    if (!fix && !b.isRecorded) return false;
+    if (fix) {
+      debugLog.push({
+        t: Math.round(video.currentTime * 10) / 10, type: 'recover', moves: b.san, fast: recorded.map(m => m.san),
+        top: Object.entries(ch).sort((x, y) => y[1] - x[1]).slice(0, 8).map(([q, v]) => q + ':' + v.toFixed(0)),
+      });
+      if (debugLog.length > 300) debugLog.shift();
+      undoPlies(recorded.length);
+      for (const m of b.moves) applyMove({ from: m.from, to: m.to, promotion: m.promotion }, 'recover');
+      S.warn = null;
+      if (recorded.length) toast('Ходы исправлены: ' + b.san.join(' '));
+    } else if (!recorded.length && !Object.keys(S.firstChange).length) {
+      return false; // ничего не происходило
+    }
+    // Новая точка отсчёта. Клетки под рукой берём из старого эталона, если их содержимое
+    // не изменилось; если изменилось — точку отсчёта не двигаем, эти клетки переснимем позже.
+    // Новая точка отсчёта. Клетки под рукой берём из старого эталона; те из них, где содержимое
+    // изменилось (или эталон уже был устаревшим), переснимем, когда рука уйдёт.
+    const code = (pos, q) => { const p = pos.get(q); return p ? p.color + p.type : ''; };
+    const hidden = Array.from(mask).filter(q => S.pending.has(q) || code(base, q) !== code(S.chess, q));
+    const nf = BV.cloneFeatures(steady);
+    BV.copyCells(nf, S.fullRef, Array.from(mask).map(q => BV.squareToCell(q, S.k)));
+    setBase(nf, hidden);
+    for (const q of hidden) S.recent.add(q);
+    if (hidden.length) S.refine = { squares: new Set(hidden), at: t };
+    return true;
   }
 
   /*
@@ -1679,6 +1823,23 @@
     motionLog,
     moves: moveLog,
     ai,
+    /** Покадровая проверка (для повторяемых тестов): свой таймер выключается, кадр — по вызову. */
+    manual() { S.manual = true; clearInterval(S.timer); },
+    async step(t) {
+      video.pause();
+      if (Math.abs(video.currentTime - t) > 1e-4) {
+        // ждём не только перемотку, но и показ нового кадра (под нагрузкой кадр приходит позже)
+        await new Promise(r => {
+          let n = 0;
+          const done = () => { if (++n === 2) r(); };
+          video.addEventListener('seeked', done, { once: true });
+          if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(done); else n++;
+          setTimeout(() => r(), 3000);
+          video.currentTime = t;
+        });
+      }
+      tick();
+    },
     /** Начать запись с произвольной позиции (FEN) и известной ориентации доски (для проверки на роликах). */
     startFrom(fen, k) {
       const c = new Chess();

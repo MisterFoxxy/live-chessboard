@@ -258,11 +258,20 @@
   }
 
   /**
+   * Как считать разницу точек. relK/relN — поправка на яркость: одинаковый сдвиг яркости
+   * на тёмной клетке заметнее, чем на светлой (чёрная фигура на тёмно-коричневой клетке
+   * отличается от неё всего на 20–30 единиц, а шум светлой клетки бывает таким же).
+   * chroma — вес разницы оттенка (R−B): тёмная клетка доски «тёплая», чёрная фигура — серая,
+   * светлые фигуры обычно желтоватее белой клетки. mode 'plain' — старый способ (для сравнения).
+   */
+  const diffOpts = { mode: 'rel', relK: 80, relN: 130, chroma: 1 };
+
+  /**
    * Насколько изменилась каждая клетка (с поправкой на общую яркость/экспозицию).
    * Берём среднее по самой изменившейся доле точек: фигура занимает лишь часть клетки,
    * и обычное среднее «размывает» её появление или исчезновение.
    */
-  function cellDiff(a, b, topFrac) {
+  function cellDiff(a, b, topFrac, plain) {
     const cnt = a.per / 3, out = new Float32Array(64);
     // Поправка на экспозицию — медиана отношений яркости по клеткам:
     // рука над частью доски на неё почти не влияет.
@@ -277,11 +286,18 @@
     if (!(g >= 0.7)) g = 0.7; else if (g > 1.4) g = 1.4;
     const top = Math.max(1, Math.round(cnt * (topFrac || 0.35)));
     const d = new Float32Array(cnt);
+    const rel = !plain && diffOpts.mode !== 'plain', K = diffOpts.relK, N = diffOpts.relN, CH = diffOpts.chroma;
     for (let cell = 0; cell < 64; cell++) {
       const o = cell * a.per;
       for (let i = 0, k = o; i < cnt; i++, k += 3) {
-        d[i] = (Math.abs(a.data[k] - b.data[k] * g) + Math.abs(a.data[k + 1] - b.data[k + 1] * g) +
-                Math.abs(a.data[k + 2] - b.data[k + 2] * g)) / 3;
+        const r1 = a.data[k], g1 = a.data[k + 1], b1 = a.data[k + 2];
+        const r2 = b.data[k] * g, g2 = b.data[k + 1] * g, b2 = b.data[k + 2] * g;
+        let v = (Math.abs(r1 - r2) + Math.abs(g1 - g2) + Math.abs(b1 - b2)) / 3;
+        if (rel) {
+          v += CH * Math.abs((r1 - b1) - (r2 - b2));
+          v *= N / ((r1 + g1 + b1 + r2 + g2 + b2) / 6 + K);
+        }
+        d[i] = v;
       }
       d.sort();
       let sum = 0;
@@ -373,8 +389,18 @@
       wht = avg(lum, (r, c) => c <= 1) - avg(lum, (r, c) => c >= 6);
       k = wht >= 0 ? 1 : 3;
     }
-    const recognized = strength > 0.35 && occ > 2.5 && parityOk && Math.abs(wht) > 2;
-    return { k, recognized, strength, occ, par, wht, parityOk, occRows, occCols };
+    // По клеткам: в середине доски (4 ряда) фигур быть не должно.
+    // Средние по рядам могут «сойтись» и посреди партии, когда фигуры уже вышли в центр.
+    const inner = [], outer = [];
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) (edge(axisRows ? r : c) ? outer : inner).push(tex[r * 8 + c]);
+    }
+    const mid = (median(inner) + median(outer)) / 2;
+    const innerOcc = inner.filter(x => x > mid).length, edgeEmpty = outer.filter(x => x < mid).length;
+    // (пустые по виду клетки по краям не проверяем: чёрная фигура на тёмной клетке почти без текстуры)
+    const cellsOk = innerOcc <= 2;
+    const recognized = strength > 0.35 && occ > 2.5 && parityOk && Math.abs(wht) > 2 && cellsOk;
+    return { k, recognized, strength, occ, par, wht, parityOk, occRows, occCols, innerOcc, edgeEmpty };
   }
 
   /* ---------- Изменения и подбор хода ---------- */
@@ -811,6 +837,356 @@
     return pick(pairs, 'pair ');
   }
 
+  /**
+   * «Тёмный уровень» клетки — яркость самых тёмных 10% точек. Чёрная фигура даёт почти чёрные
+   * точки и на светлой, и на тёмной клетке; пустая тёмная клетка и светлая фигура (даже с тенью)
+   * заметно светлее. Порог подбирается по проверенной позиции (calibrateDark).
+   */
+  function darkLevel(f, cell) {
+    const n = f.per / 3, o = cell * f.per, d = f.data, lum = new Float32Array(n);
+    for (let i = 0; i < n; i++) lum[i] = 0.299 * d[o + i * 3] + 0.587 * d[o + i * 3 + 1] + 0.114 * d[o + i * 3 + 2];
+    lum.sort();
+    return lum[Math.floor(n * 0.1)];
+  }
+
+  /**
+   * Порог «на клетке чёрная фигура» по позиции, где известно, что где стоит.
+   * pieceAt(cell) → 'b' | 'w' | '' . Возвращает {thr, gap} или null, если классы не разделяются.
+   */
+  function calibrateDark(f, pieceAt) {
+    const black = [], other = [];
+    for (let cell = 0; cell < 64; cell++) {
+      const p = pieceAt(cell);
+      if (p === 'x') continue; // неизвестно (клетка под рукой)
+      (p === 'b' ? black : other).push(darkLevel(f, cell));
+    }
+    if (black.length < 3 || other.length < 3) return null;
+    black.sort((a, b) => a - b); other.sort((a, b) => a - b);
+    const hiBlack = black[Math.floor(black.length * 0.8)], loOther = other[Math.floor(other.length * 0.1)];
+    const gap = loOther - hiBlack;
+    if (gap < 12) return null;
+    return { thr: (hiBlack + loOther) / 2, gap };
+  }
+
+  /**
+   * Восстановление пропущенных ходов. Когда играют очень быстро и рука почти не уходит
+   * с доски, отдельные ходы не успевают «замереть» — зато в короткие паузы видно, чем
+   * доска отличается от последней проверенной позиции. Ищем цепочку до maxPlies ходов
+   * от этой позиции, итог которой объясняет картину (сравниваем итоговые позиции,
+   * а не каждый ход: фигура, побитая по пути, в итоге не видна).
+   * chess — проверенная позиция (по итогам вызова не меняется).
+   * opts: threshold, occ, maxPlies, maxNodes,
+   *       active — Set клеток, которые менялись с момента проверки (ходы ищем только по ним),
+   *       order — {клетка: когда на ней впервые что-то замерло} (для порядка ходов),
+   *       recorded — SAN уже записанных ходов (при равенстве оставляем их),
+   *       colorOf(square) → 'b' (видна чёрная фигура) | 'n' (чёрной нет) | null,
+   *       mask — Set клеток, закрытых рукой (их не оцениваем).
+   * Возвращает {best, recorded} — оценки лучшей цепочки и записанной (или null).
+   */
+  function findSequence(chess, changes, opts) {
+    const T = opts.threshold || 14;
+    const maxPlies = opts.maxPlies != null ? opts.maxPlies : 6;
+    const maxNodes = opts.maxNodes || 6000;
+    const occ = opts.occ || {};
+    const active = opts.active || new Set(SQUARES.filter(q => (changes[q] || 0) >= T * 0.7));
+    const order = opts.order || {};
+    const code = p => (p ? p.color + p.type : '');
+    const basePos = {};
+    for (const q of SQUARES) basePos[q] = code(chess.get(q));
+    // Клетки под рукой (mask) не оцениваем: ни «изменилась», ни «не изменилась».
+    const mask = opts.mask || new Set();
+    const strong = SQUARES.filter(q => !mask.has(q) && (changes[q] || 0) >= T * 1.6);
+    const changed = SQUARES.filter(q => !mask.has(q) && (changes[q] || 0) >= T);
+    const recordedKey = (opts.recorded || []).join(' ');
+    const occBy = {}; // клетка → с каких клеток на неё наклоняется фигура
+    for (const o of Object.keys(occ)) for (const q of occ[o] || []) (occBy[q] = occBy[q] || []).push(o);
+
+    const evaluate = seq => {
+      const req = [], opt = [];
+      for (const q of SQUARES) {
+        const a = basePos[q], b = code(chess.get(q));
+        if (a === b) continue;
+        // сменился цвет/занятость — изменение обязано быть видно; та же сторона,
+        // другая фигура (конь → король на g1) — может быть почти незаметно
+        if (a[0] !== b[0]) req.push(q); else opt.push(q);
+      }
+      // Объяснены клетки итоговых изменений, клетки, куда фигуру поставили и она там осталась
+      // (на d5 пешку побили и поставили другую — содержимое то же, а картинка изменилась),
+      // и их «тени». Клетка, через которую фигура прошла и ушла, должна остаться как была.
+      const covered = new Set(req.concat(opt));
+      const placed = new Set();
+      for (const m of seq) {
+        for (const q of squaresOfMove(m)) placed.delete(q);
+        placed.add(m.to);
+        if (m.flags.indexOf('k') >= 0) placed.add('f' + m.to[1]);
+        if (m.flags.indexOf('q') >= 0) placed.add('d' + m.to[1]);
+      }
+      for (const q of placed) covered.add(q);
+      // «Тень» (наклон фигуры на соседнюю клетку) не может быть намного заметнее самой фигуры:
+      // сильное изменение рядом — это другая фигура, а не тень.
+      for (const q of Array.from(covered)) {
+        const lim = Math.max(T * 3, (changes[q] || 0) * 1.5);
+        for (const o of occ[q] || []) if ((changes[o] || 0) <= lim) covered.add(o);
+      }
+      let missing = 0, weak = 0, min = Infinity;
+      for (const q of req) {
+        if (mask.has(q)) continue;
+        const v = changes[q] || 0;
+        if (v < T) missing++; else if (v < T * 2) weak++;
+        if (v < min) min = v;
+      }
+      // Порядок: ход сделан не раньше, чем на его клетках что-то замерло.
+      let inv = 0;
+      const when = m => {
+        const a = order[m.to], b = order[m.from];
+        return a != null ? a : b != null ? b : null;
+      };
+      for (let i = 0; i < seq.length; i++) {
+        for (let j = i + 1; j < seq.length; j++) {
+          const a = when(seq[i]), b = when(seq[j]);
+          if (a != null && b != null && a > b + 300) inv++;
+        }
+      }
+      const touched = new Set();
+      for (const m of seq) for (const q of squaresOfMove(m)) touched.add(q);
+      let idle = 0;
+      for (const q of Object.keys(order)) if (!touched.has(q) && !covered.has(q)) idle++;
+      // Соседи клеток хода: высокая фигура наклоняется на соседнюю клетку (камера сверху —
+      // наружу от центра кадра), рядом ложится тень. Умеренное изменение там — шум, а не
+      // необъяснённый ход.
+      const near = new Set();
+      for (const q of covered) {
+        const f = q.charCodeAt(0), r = +q[1];
+        for (let df = -1; df <= 1; df++) for (let dr = -1; dr <= 1; dr++) near.add(String.fromCharCode(f + df) + (r + dr));
+      }
+      // Фигуру задели и она сдвинулась внутри клетки: изменение есть, но цвет на клетке тот,
+      // что должен быть по позиции. Это не ход — считаем «сдвинутой» (дешевле необъяснённой).
+      // (только для чёрных фигур: «не чёрная» не отличает светлую фигуру от пустой клетки)
+      const sameColor = q => {
+        const p = chess.get(q);
+        return !!p && p.color === 'b' && !!opts.colorOf && opts.colorOf(q) === 'b';
+      };
+      // direct — сильные изменения, объяснённые самими ходами; объяснение «тенью» или наклоном
+      // соседней фигуры слабее (indirect), как и клетка хода, закрытая рукой (unverified).
+      const direct = new Set(req.concat(opt));
+      for (const q of placed) direct.add(q);
+      let unexplained = 0, bumped = 0, indirect = 0, unverified = 0;
+      for (const q of strong) {
+        if (direct.has(q)) continue;
+        if (covered.has(q) || (near.has(q) && changes[q] < T * 3)) { indirect++; continue; }
+        if (sameColor(q)) bumped++; else unexplained++;
+      }
+      for (const q of req) if (mask.has(q)) unverified++;
+      const noise = changed.filter(q => !covered.has(q)).length;
+      // Цвет: там, где по цепочке должна стоять чёрная фигура, она видна, и наоборот.
+      let conflict = 0;
+      const conflictAt = [];
+      if (opts.colorOf) {
+        for (const q of req) {
+          // проверяем только клетки, куда фигура пришла: на опустевшую клетку часто «заходит»
+          // соседняя фигура, и тёмные точки там ничего не значат
+          const p = chess.get(q);
+          if (!p) continue;
+          const c = mask.has(q) ? null : opts.colorOf(q);
+          if (!c) continue;
+          const isBlack = p.color === 'b';
+          // «Чёрное» на клетке может быть наклонившейся соседней чёрной фигурой (ферзь d8 над c8).
+          if (c === 'b' && !isBlack && (occBy[q] || []).some(o => { const x = chess.get(o); return x && x.color === 'b'; })) continue;
+          if ((c === 'b') !== isBlack) { conflict++; conflictAt.push(q); }
+        }
+      }
+      return {
+        moves: seq.slice(), san: seq.map(m => m.san), plies: seq.length,
+        req, opt, unexplained, bumped, indirect, unverified, missing, weak, noise, conflict, conflictAt, inv, idle, min,
+        noiseAt: changed.filter(q => !covered.has(q)),
+        // каждый лишний ход тоже «стоит»: шум не объясняем цепочкой выдуманных ходов
+        cost: unexplained * 4 + missing * 3 + weak * 1.5 + conflict * 3 + noise + seq.length + indirect * 0.5,
+        fen: chess.fen().split(' ').slice(0, 4).join(' '),
+        isRecorded: seq.map(m => m.san).join(' ') === recordedKey,
+      };
+    };
+    const better = (a, b) => {
+      if (!b) return true;
+      if (a.cost !== b.cost) return a.cost < b.cost;
+      if (a.plies !== b.plies) return a.plies < b.plies;
+      if (a.inv !== b.inv) return a.inv < b.inv;
+      if (a.idle !== b.idle) return a.idle < b.idle;
+      if (a.isRecorded !== b.isRecorded) return a.isRecorded;
+      return a.min > b.min;
+    };
+
+    const seenAt = q => (changes[q] || 0) >= T || (!mask.has(q) && ((changes[q] || 0) >= T * 0.7 || order[q] != null));
+    let best = null, nodes = 0, budget = 0;
+    const byFen = new Map(); // лучшая цепочка для каждой итоговой позиции — чтобы видеть неоднозначность
+    const consider = c => {
+      const o = byFen.get(c.fen);
+      if (!o || better(c, o)) byFen.set(c.fen, c);
+      if (better(c, best)) best = c;
+    };
+    const seq = [];
+    // Одна и та же позиция, достигнутая другим порядком ходов, с тем же запасом глубины —
+    // второй раз не раскрываем (оценка порядка у таких цепочек почти всегда та же).
+    const seen = new Map();
+    const dfs = depth => {
+      const c = evaluate(seq);
+      consider(c);
+      if (depth <= 0 || nodes >= budget) return;
+      const key = chess.fen().split(' ').slice(0, 2).join(' ');
+      const was = seen.get(key);
+      if (was && was.depth >= depth && was.inv <= c.inv) return;
+      seen.set(key, { depth, inv: c.inv });
+      const turn = chess.turn(), list = [];
+      for (const q of active) {
+        const p = chess.get(q);
+        if (p && p.color === turn) for (const m of chess.moves({ square: q, verbose: true })) list.push(m);
+      }
+      // сначала ходы, клетки которых изменились сильнее всего
+      const ev = m => (changes[m.from] || 0) + (changes[m.to] || 0);
+      list.sort((a, b) => ev(b) - ev(a));
+      for (const m of list) {
+        if (!active.has(m.to)) continue;
+        // ход целиком под рукой проверить нечем — хотя бы одна его клетка должна быть видна
+        if (!seenAt(m.from) && !seenAt(m.to)) continue;
+        // фигура той же стороны сразу возвращается назад — такую цепочку не рассматриваем
+        const prev = seq[seq.length - 2];
+        if (prev && prev.from === m.to && prev.to === m.from) continue;
+        if (++nodes > budget) return;
+        chess.move({ from: m.from, to: m.to, promotion: m.promotion });
+        seq.push(m);
+        dfs(depth - 1);
+        seq.pop();
+        chess.undo();
+      }
+    };
+    // Сначала — продолжения записанного (обычно оно верно, просто не всё успели записать),
+    // потом — без последних одного-двух записанных ходов, потом — с нуля.
+    const recMoves = [];
+    for (const san of opts.recorded || []) {
+      const m = chess.move(san);
+      if (!m) break;
+      recMoves.push(m);
+    }
+    for (let i = 0; i < recMoves.length; i++) chess.undo();
+    const L = recMoves.length;
+    const play = list => { for (const m of list) chess.move({ from: m.from, to: m.to, promotion: m.promotion }); };
+    const unplay = n => { for (let i = 0; i < n; i++) chess.undo(); };
+    // Ходы-кандидаты из текущей позиции: по клеткам, которые менялись, и хотя бы одна клетка видна.
+    const candidates = () => {
+      const turn = chess.turn(), list = [];
+      for (const q of active) {
+        const p = chess.get(q);
+        if (p && p.color === turn) for (const m of chess.moves({ square: q, verbose: true })) list.push(m);
+      }
+      const ev = m => (changes[m.from] || 0) + (changes[m.to] || 0);
+      return list.filter(m => active.has(m.to) && (seenAt(m.from) || seenAt(m.to))).sort((a, b) => ev(b) - ev(a));
+    };
+
+    // 1) Продолжения записанного (обычно оно верно, просто не всё успели записать):
+    //    перебор в глубину до 4 ходов после записанного и после него без последнего хода.
+    for (const k of L ? [L, L - 1] : []) {
+      play(recMoves.slice(0, k));
+      for (let i = 0; i < k; i++) seq.push(recMoves[i]);
+      budget = nodes + Math.round(maxNodes * (k === L ? 0.25 : 0.1));
+      dfs(Math.min(4, maxPlies));
+      for (let i = 0; i < k; i++) seq.pop();
+      unplay(k);
+    }
+
+    // 2) Записанное с одним заменённым ходом (пешка c6 вместо коня на c6, Rg1 вместо рокировки):
+    //    остальные записанные ходы сохраняем, если они ещё возможны.
+    if (L) {
+      const cap = nodes + Math.round(maxNodes * 0.2);
+      for (let i = 0; i < L && nodes < cap; i++) {
+        play(recMoves.slice(0, i));
+        for (const alt of candidates()) {
+          if (alt.from === recMoves[i].from && alt.to === recMoves[i].to) continue;
+          if (++nodes > cap) break;
+          chess.move({ from: alt.from, to: alt.to, promotion: alt.promotion });
+          const line = recMoves.slice(0, i).concat([alt]);
+          let n = i + 1;
+          for (let j = i + 1; j < L; j++) {
+            const m = chess.move({ from: recMoves[j].from, to: recMoves[j].to, promotion: recMoves[j].promotion });
+            if (!m) break;
+            line.push(m); n++;
+          }
+          const c = evaluate(line);
+          consider(c);
+          unplay(n - i);
+        }
+        unplay(i);
+      }
+    }
+
+    // 3) С нуля — поиск лучом: на каждом шаге оставляем beam лучших цепочек
+    //    (полный перебор на 5–6 ходов не успевается).
+    {
+      const B = opts.beam || 10;
+      let beam = [[]];
+      const cap = nodes + Math.round(maxNodes * 0.45);
+      for (let d = 0; d < maxPlies && beam.length && nodes < cap; d++) {
+        const next = new Map();
+        for (const line of beam) {
+          play(line);
+          for (const m of candidates()) {
+            const prev = line[line.length - 2];
+            if (prev && prev.from === m.to && prev.to === m.from) continue;
+            if (++nodes > cap) break;
+            chess.move({ from: m.from, to: m.to, promotion: m.promotion });
+            const nl = line.concat([m]);
+            const c = evaluate(nl);
+            consider(c);
+            const old = next.get(c.fen);
+            if (!old || better(c, old.c)) next.set(c.fen, { c, line: nl });
+            chess.undo();
+          }
+          unplay(line.length);
+        }
+        beam = Array.from(next.values()).sort((a, b) => (better(a.c, b.c) ? -1 : 1)).slice(0, B).map(x => x.line);
+      }
+    }
+
+    // Записанную цепочку оцениваем всегда (она может быть длиннее maxPlies).
+    let rec = null;
+    if (opts.recorded && recMoves.length === opts.recorded.length) {
+      for (const m of recMoves) chess.move({ from: m.from, to: m.to, promotion: m.promotion });
+      rec = evaluate(recMoves);
+      for (let i = 0; i < recMoves.length; i++) chess.undo();
+      consider(rec);
+    }
+    // Те же ходы, но в порядке, в каком менялись их клетки (лучом порядок теряется):
+    // на каждом шаге берём самый ранний возможный ход нужного цвета.
+    if (best && best.plies > 1 && best.inv > 0) {
+      const when = m => { const a = order[m.to], b = order[m.from]; return a != null ? a : b != null ? b : Infinity; };
+      const left = best.moves.slice();
+      const line = [];
+      while (left.length) {
+        const turn = chess.turn();
+        const cand = left.filter(m => m.color === turn).sort((a, b) => when(a) - when(b));
+        let done = null;
+        for (const m of cand) {
+          const r = chess.move({ from: m.from, to: m.to, promotion: m.promotion });
+          if (r) { done = m; line.push(r); break; }
+        }
+        if (!done) break;
+        left.splice(left.indexOf(done), 1);
+      }
+      if (!left.length) consider(evaluate(line));
+      unplay(line.length);
+    }
+    // Лучшая цепочка, ведущая к другой позиции (если она почти так же хороша — картина неоднозначна).
+    let alt = null;
+    for (const [fen, c] of byFen) if (fen !== best.fen && better(c, alt)) alt = c;
+    // Для отладки: оценки заданных цепочек (opts.probe — массивы SAN).
+    const probes = (opts.probe || []).map(line => {
+      const played = [];
+      for (const san of line) { const m = chess.move(san); if (!m) break; played.push(m); }
+      const c = played.length === line.length ? evaluate(played) : null;
+      for (let i = 0; i < played.length; i++) chess.undo();
+      return c;
+    });
+    return { best, alt, recorded: rec, nodes, probes };
+  }
+
   /* ---------- Детектор «рука над доской / доска успокоилась» ---------- */
 
   class MotionTracker {
@@ -881,14 +1257,21 @@
         this.since.fill(t);
         return { motion: 0, moving: false, settled: null, threshold: this.threshold() };
       }
-      const cells = cellDiff(feat, this.prev);
+      // Движение — простая разница: относительная усиливает шум сжатия на тёмных клетках.
+      const cells = cellDiff(feat, this.prev, 0.35, true);
       this.prev = feat;
       this.lastCells = cells;
+      // Повтор того же кадра (видеофайл, браузер не успел получить новый) — для оценки шума
+      // не считаем: иначе «шум» окажется нулевым и любое мерцание будет выглядеть движением.
+      let dup = true;
+      for (let c = 0; c < 64; c++) if (cells[c] > 0.05) { dup = false; break; }
       const n = this.opts.noiseWindow;
-      for (let c = 0; c < 64; c++) this.hist[c * n + this.histPos] = cells[c];
-      this.histPos = (this.histPos + 1) % n;
-      this.histLen = Math.min(n, this.histLen + 1);
-      if (this.frames++ % 5 === 0) this.updateThresholds();
+      if (!dup) {
+        for (let c = 0; c < 64; c++) this.hist[c * n + this.histPos] = cells[c];
+        this.histPos = (this.histPos + 1) % n;
+        this.histLen = Math.min(n, this.histLen + 1);
+        if (this.frames++ % 5 === 0) this.updateThresholds();
+      }
       let motion = 0, movingCells = 0;
       for (let c = 0; c < 64; c++) {
         if (cells[c] > this.cellThr[c]) {
@@ -932,9 +1315,9 @@
     FILES, SQUARES, UNIT,
     computeHomography, applyH, orderQuad, isConvexQuad, cameraFromH,
     squareToCell, cellToSquare,
-    samplePlan, sampleWithPlan, sampleBoard, averageFeatures, cellDiff, cellStats,
-    cloneFeatures, copyCells,
-    detectStartPosition, squareChanges, squaresOfMove, uniqueMoves, occlusionMap, findMove, findFastMove, scoreMoves, scoreSquares,
+    samplePlan, sampleWithPlan, sampleBoard, averageFeatures, cellDiff, cellStats, diffOpts,
+    cloneFeatures, copyCells, darkLevel, calibrateDark,
+    detectStartPosition, squareChanges, squaresOfMove, uniqueMoves, occlusionMap, findMove, findFastMove, scoreMoves, scoreSquares, findSequence,
     MotionTracker,
   };
 }));
