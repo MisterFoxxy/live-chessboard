@@ -8,6 +8,7 @@
   const BV = window.BoardVision;
   const AI = window.SquareAI;
   const BD = window.BoardDetect;
+  const BN = window.BoardNet;
   if (typeof Chess === 'undefined' || !BV || !AI || !BD) {
     document.body.innerHTML = '<p style="padding:24px;color:#fff">Не удалось загрузить скрипты. Проверьте интернет и обновите страницу.</p>';
     return;
@@ -15,7 +16,7 @@
 
   /* ---------- Константы и утилиты ---------- */
 
-  const APP_VERSION = '13 · видео для обучения ИИ';
+  const APP_VERSION = '14 · нейросеть смотрит на доску';
   const TICK_MS = 33;      // ~30 кадров/с
   const SETTLE_MS = 600;   // полная проверка, когда вся доска неподвижна
   const PROC_W = 640;
@@ -106,6 +107,14 @@
   const motionLog = [];
   const moveLog = [];
   const quietLog = []; // решения проверки в паузах (для отладочного журнала)
+  const netLog = [];   // решения нейросети (для отладочного журнала)
+  // Нейросеть, обученная на записях настоящих партий: что стоит на каждой клетке.
+  let boardNet = null, netBg = null;
+  window.vcNetReady = BN ? BN.load('models/board-net.bnet?v=14').then(n => {
+    boardNet = n;
+    try { if (typeof Worker === 'function') netBg = new BN.Background('js/board-net.js?v=14', n); } catch (e) { netBg = null; }
+    return true;
+  }).catch(e => { console.warn(e); return false; }) : Promise.resolve(false);
 
   const S = {
     source: null,          // 'camera' | 'file'
@@ -411,6 +420,7 @@
         }
       } else if (!S.ref) {
         if (tracker.isSteady()) setBase(tracker.steadyFeatures());
+        else netBootstrap(feat);
       } else if (res.settled) {
         onSettled(res.settled);
       } else {
@@ -420,7 +430,9 @@
     updateStatus();
     updateAIInfo();
     drawOverlay();
-    S.tickMs = S.tickMs * 0.9 + (performance.now() - t0) * 0.1;
+    const dt = performance.now() - t0;
+    S.tickMs = S.tickMs * 0.9 + dt * 0.1;
+    if (window.vcPerf) window.vcPerf.push(Math.round(dt * 10) / 10); // замер скорости в тестах
   }
 
   /** Сколько клеток двигались за последние ms миллисекунд. */
@@ -536,6 +548,15 @@
   }
 
   const isLight = sq => ('abcdefgh'.indexOf(sq[0]) + +sq[1]) % 2 === 0;
+
+  /** Позиция после первых ply ходов партии (с её начальной позиции, если партия начата не с начала). */
+  function positionAt(ply) {
+    const c = new Chess();
+    const fen = S.chess.header().FEN;
+    if (fen) c.load(fen);
+    for (const m of S.chess.history().slice(0, ply)) c.move(m);
+    return c;
+  }
 
   /** ИИ: дообучение и оценка всех клеток текущего кадра. */
   function runAI(feat) {
@@ -727,8 +748,8 @@
       if (t - tracker.since[c] < QUIET_MS) movingCells.push(c);
       else if (tracker.since[c] > last) last = tracker.since[c];
     }
-    if (movingCells.length > QUIET_MAX_MOVING || S.quietAt === last) return false;
-    S.quietAt = last;
+    if (movingCells.length > QUIET_MAX_MOVING) return false;
+    const newQuiet = S.quietAt !== last;
     const mask = new Set();
     for (const c of movingCells) {
       const r = c >> 3, col = c & 7;
@@ -739,12 +760,22 @@
         }
       }
     }
+    const steady = mask.size ? feat : tracker.steadyFeatures();
+    // Сначала — нейросеть: подтверждает запись или исправляет её. Тогда эталон сравнения
+    // просто переснимаем (сеть видит саму доску, ей не нужен эталон).
+    const nr = netCheck(t, mask, newQuiet, BV.squareChanges(S.fullRef, steady, S.k).bySquare);
+    if (nr && !S.netStale) {
+      S.quietAt = last;
+      advanceBase(steady, mask, positionAt(S.basePly), []);
+      return true;
+    }
+    if (nr) return true;
+    if (!newQuiet) return false;
+    S.quietAt = last;
     const T = settings.threshold;
     const hist = S.chess.history({ verbose: true });
     const recorded = hist.slice(S.basePly);
-    const base = new Chess();
-    for (const m of hist.slice(0, S.basePly)) base.move(m.san);
-    const steady = mask.size ? feat : tracker.steadyFeatures();
+    const base = positionAt(S.basePly);
     // Клетки, менявшиеся под рукой при прошлой проверке, теперь видны — переснимаем их эталон.
     if (S.pending.size) {
       const moved = new Set();
@@ -769,8 +800,10 @@
       if (bc && !isLight(sq)) { const v = BV.brightLevel(steady, cell), m = bc.gap * 0.2; w = v > bc.thr + m ? true : v < bc.thr - m ? false : null; }
       return { b, w };
     } : null;
+    const netFresh = S.netP && S.netPAt === t;
     const aiP = settings.ai && ai.ready() ? S.aiP : null;
-    const aiOf = aiP ? sq => aiP[BV.squareToCell(sq, S.k)] : null;
+    const aiOf = netFresh ? netProbs
+      : aiP ? sq => aiP[BV.squareToCell(sq, S.k)] : null;
     const t0 = performance.now();
     const r = BV.findSequence(base, ch, {
       threshold: T, occ: S.occ, active, order: S.firstChange, events: S.events, colorOf, mask, aiOf,
@@ -913,17 +946,205 @@
     }
     // Новая точка отсчёта. Клетки под рукой берём из старого эталона; те из них, где содержимое
     // изменилось (или эталон уже был устаревшим), переснимем, когда рука уйдёт.
+    // Необъяснённые изменения в эталон не впитываем: это может быть половина хода, вторая
+    // половина которого сейчас видна слабо (светлая пешка на светлой клетке в тени руки).
+    advanceBase(steady, mask, base, b.noiseAt.filter(q => !mask.has(q)));
+    return true;
+  }
+
+  /** Новая точка отсчёта сравнения: текущий кадр; клетки под рукой и keepOld — из старого эталона. */
+  function advanceBase(steady, mask, base, keepOld) {
     const code = (pos, q) => { const p = pos.get(q); return p ? p.color + p.type : ''; };
     const hidden = Array.from(mask).filter(q => S.pending.has(q) || code(base, q) !== code(S.chess, q));
     const nf = BV.cloneFeatures(steady);
     BV.copyCells(nf, S.fullRef, Array.from(mask).map(q => BV.squareToCell(q, S.k)));
-    // Необъяснённые изменения в эталон не впитываем: это может быть половина хода, вторая
-    // половина которого сейчас видна слабо (светлая пешка на светлой клетке в тени руки).
-    BV.copyCells(nf, S.fullRef, b.noiseAt.filter(q => !mask.has(q)).map(q => BV.squareToCell(q, S.k)));
+    BV.copyCells(nf, S.fullRef, keepOld.map(q => BV.squareToCell(q, S.k)));
     setBase(nf, hidden);
     for (const q of hidden) S.recent.add(q);
-    if (hidden.length) S.refine = { squares: new Set(hidden), at: t };
-    return true;
+    if (hidden.length) S.refine = { squares: new Set(hidden), at: tracker.now };
+  }
+
+  /*
+   * Проверка нейросетью. Сеть смотрит на сам кадр и говорит, что стоит на каждой видимой клетке.
+   * Ищем легальные ходы от последней подтверждённой сетью позиции, итог которых лучше всего
+   * совпадает с её ответом. Записанное подтверждается; если другая цепочка ходов объясняет
+   * доску заметно лучше и это повторилось дважды подряд — запись исправляется.
+   * Возвращает 'ok' | 'fixed' | null (сеть не уверена — решает обычная проверка).
+   */
+  const NET_RETRY_MS = 600;   // повторная проверка в той же паузе, если в прошлый раз не сошлось
+  const NET_IDLE_MS = 2000;   // и раз в 2 с, даже если ничего не менялось (пропущенный слабый ход)
+  const NET_MARGIN = 3;       // насколько исправленная цепочка должна объяснять доску лучше записанной
+  function netCheck(t, mask, newQuiet, ch) {
+    if (!boardNet || !settings.ai || window.vcNoNet || !S.lastImg || !S.H || !S.fullRef) return null;
+    if (!(S.cam && S.cam.tilt < QUIET_MAX_TILT)) return null; // сеть обучена на съёмке сверху
+    const due = newQuiet || (S.netOpen && t - S.netAt >= NET_RETRY_MS) || t - S.netAt >= NET_IDLE_MS;
+    if (netBg && !netBg.failed && !S.manual) {
+      // Ответ фонового потока по кадру, снятому чуть раньше. Годится, если с тех пор ничего
+      // не записали и на видимых тогда клетках ничего не двигалось.
+      const R = S.netRes;
+      if (R && !R.used) {
+        R.used = true;
+        // Ответ по кадру, снятому чуть раньше. Годится, если с тех пор не записали новых ходов.
+        // Если на открытых тогда клетках что-то двигалось, эталон по нынешнему кадру не переснимаем.
+        if (S.chess.history().length === R.plies) {
+          let moved = false;
+          for (let c = 0; c < 64 && !moved; c++) if (tracker.since[c] > R.t && !R.mask.has(BV.cellToSquare(c, S.k))) moved = true;
+          S.netStale = moved;
+          if (!moved) { S.netP = R.probs; S.netPAt = t; }
+          return netDecide(R.probs, t, R.mask, moved ? null : ch, R.ms);
+        }
+      }
+      if (due && !netBg.busy) {
+        const req = { t, mask: new Set(mask), plies: S.chess.history().length, at: performance.now() };
+        S.netAt = t;
+        netBg.run(S.lastImg, S.H, p => { if (p) { req.probs = p; req.ms = Math.round(performance.now() - req.at); S.netRes = req; } });
+      }
+      return null;
+    }
+    if (!due) return null;
+    S.netStale = false;
+    const t0 = performance.now();
+    const probs = boardNet.run(S.lastImg, S.H);
+    S.netP = probs;
+    S.netAt = S.netPAt = t;
+    return netDecide(probs, t, mask, ch, Math.round(performance.now() - t0));
+  }
+
+  function netDecide(probs, t, mask, ch, ms) {
+    const t0 = performance.now();
+    const P = sq => {
+      if (mask.has(sq)) return null;
+      const p = netProbs(sq, probs);
+      if (p[3] >= 0.5) return null; // клетку закрывает рука
+      const s = p[0] + p[1] + p[2];
+      return [p[0] / s, p[1] / s, p[2] / s];
+    };
+    const hist = S.chess.history({ verbose: true });
+    if (S.netPly == null || S.netPly > hist.length) S.netPly = Math.min(S.basePly || 0, hist.length);
+    const recorded = hist.slice(S.netPly);
+    const base = positionAt(S.netPly);
+    const rc = BV.netCost(S.chess, P);
+    const recCost = rc.cost + recorded.length;
+    const recKey = S.chess.fen().split(' ').slice(0, 3).join(' ');
+    // Запись уже объясняет всё, что видит сеть, — искать нечего (обычный случай, без затрат).
+    // Сеть видит то же расхождение, что и в прошлый раз (например, наклонённая фигура на соседней
+    // клетке) — повторять поиск незачем, берём прошлый ответ.
+    const sig = !rc.bad.length ? '' : S.netPly + '|' + hist.length + '|' + BV.SQUARES.map(q => {
+      const p = P(q);
+      if (!p) return '-';
+      return p[0] >= 0.5 ? '0' : p[1] >= 0.5 ? '1' : p[2] >= 0.5 ? '2' : '?';
+    }).join('');
+    let r;
+    if (!rc.bad.length) r = { best: { key: recKey, san: recorded.map(m => m.san), moves: recorded, cost: recCost, bad: [] }, second: null };
+    else if (S.netCache && S.netCache.sig === sig) r = S.netCache.r;
+    else {
+      r = BV.findByNet(base, P, { prefer: recorded.map(m => m.san), maxPlies: Math.min(6, Math.max(4, recorded.length + 2)), maxNodes: 1500, budgetMs: 120 });
+      S.netCache = { sig, r };
+    }
+    const b = r.best;
+    const e = {
+      t: Math.round(video.currentTime * 100) / 100, mask: mask.size, rec: recorded.map(m => m.san).join(' '),
+      best: b.san.join(' '), cost: +b.cost.toFixed(2), recCost: +recCost.toFixed(2), bad: rc.bad.join(','),
+      ms, search: Math.round(performance.now() - t0), act: '-',
+    };
+    netLog.push(e);
+    if (netLog.length > 400) netLog.shift();
+    if (window.vcNetTrace) window.vcNetTrace.push(e);
+    if (b.key === recKey) {
+      S.netCand = null;
+      S.netOpen = rc.bad.length > 0;
+      if (rc.bad.length) { netLost(t, rc.bad); return null; }
+      netFound();
+      // Где картинка изменилась, сеть должна уверенно видеть записанное — иначе эталон
+      // не переснимаем (там может быть ход, который сеть видит неуверенно).
+      const T = settings.threshold;
+      const doubt = !ch ? [] : BV.SQUARES.filter(q => {
+        if (mask.has(q) || (ch[q] || 0) < T * 0.7) return false;
+        const x = S.chess.get(q), p = P(q);
+        return !p || p[x ? (x.color === 'w' ? 1 : 2) : 0] < 0.9; // под рукой — проверить нечем
+      });
+      if (doubt.length) { e.act = 'doubt:' + doubt.join(','); return null; }
+      // Всё записанное сеть видит на доске. Ходы, клетки которых сейчас под рукой, проверим позже.
+      let ok = recorded.length;
+      while (ok > 0 && BV.squaresOfMove(recorded[ok - 1]).some(q => mask.has(q))) ok--;
+      S.netPly += ok;
+      e.act = 'ok';
+      return 'ok';
+    }
+    S.netOpen = true;
+    const sure = !b.bad.length && recCost - b.cost >= NET_MARGIN && (!r.second || r.second.cost - b.cost >= 1.5);
+    if (!sure) {
+      S.netCand = null;
+      if (rc.bad.length) netLost(t, rc.bad);
+      return null;
+    }
+    // Ход, обе клетки которого закрыты рукой, проверить нечем.
+    if (b.moves.some(m => mask.has(m.from) && mask.has(m.to))) { S.netCand = null; return null; }
+    if (!S.netCand || S.netCand.key !== b.key) { S.netCand = { key: b.key, n: 1 }; e.act = 'cand'; return null; }
+    let keep = 0;
+    while (keep < recorded.length && keep < b.moves.length && recorded[keep].san === b.moves[keep].san) keep++;
+    debugLog.push({ t: e.t, type: 'net', moves: b.san, fast: recorded.map(m => m.san), top: rc.bad.slice(0, 8) });
+    if (debugLog.length > 300) debugLog.shift();
+    undoPlies(recorded.length - keep);
+    for (const m of b.moves.slice(keep)) applyMove({ from: m.from, to: m.to, promotion: m.promotion }, 'net');
+    if (recorded.length > keep) toast('Ходы исправлены: ' + b.san.slice(keep).join(' '));
+    S.netCand = null;
+    S.netOpen = false;
+    S.netPly = S.chess.history().length;
+    netFound();
+    e.act = 'fixed';
+    return 'fixed';
+  }
+
+  /** Вероятности сети по клетке: [пусто, белая, чёрная, рука]. */
+  function netProbs(sq, probs) {
+    const K = boardNet.classes, c = BV.squareToCell(sq, S.k) * K, p = probs || S.netP;
+    return [p[c], p[c + 1], p[c + 2], K > 3 ? p[c + 3] : 0];
+  }
+
+  /*
+   * Точка отсчёта без спокойной доски: руки над доской почти всё время (быстрая игра, двое детей),
+   * а эталон снимать нужно. Если сеть видит на всех открытых клетках ровно записанную позицию —
+   * берём текущий кадр; клетки под рукой переснимем, когда она уйдёт.
+   */
+  function netBootstrap(feat) {
+    if (!boardNet || !settings.ai || window.vcNoNet || !S.lastImg || !S.H) return;
+    if (!(S.cam && S.cam.tilt < QUIET_MAX_TILT)) return;
+    const t = tracker.now;
+    if (t - S.netAt < NET_RETRY_MS) return;
+    S.netAt = S.netPAt = t;
+    S.netP = boardNet.run(S.lastImg, S.H);
+    const hidden = new Set();
+    for (let c = 0; c < 64; c++) {
+      if (t - tracker.since[c] >= QUIET_MS) continue;
+      const r = c >> 3, col = c & 7;
+      for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+        const rr = r + dr, cc = col + dc;
+        if (rr >= 0 && rr < 8 && cc >= 0 && cc < 8) hidden.add(BV.cellToSquare(rr * 8 + cc, S.k));
+      }
+    }
+    for (const sq of BV.SQUARES) if (netProbs(sq)[3] >= 0.5) hidden.add(sq);
+    if (hidden.size > 24) { netLog.push({ t: Math.round(video.currentTime * 100) / 100, mask: hidden.size, act: 'boot-busy' }); return; }
+    // Как обычная проверка сетью: подтвердить позицию или найти ходы, сделанные, пока руки были над доской.
+    const r = netDecide(S.netP, t, hidden, null, 0);
+    if (r !== 'ok' && r !== 'fixed') return;
+    setBase(feat, Array.from(hidden));
+    S.netPly = S.chess.history().length;
+  }
+
+  function netLost(t, bad) {
+    if (!S.netLostSince) { S.netLostSince = t; return; }
+    if (t - S.netLostSince > 3000 && !S.lostWarned) {
+      S.lostWarned = true;
+      S.warn = { text: 'Не понял ход — проверьте доску: ' + bad.slice(0, 4).join(', '), until: Date.now() + 8000 };
+      feedback(true);
+    }
+  }
+
+  function netFound() {
+    S.netLostSince = 0;
+    S.lostSince = 0;
+    S.lostWarned = false;
   }
 
   /*
@@ -1048,8 +1269,7 @@
       if (snap) { bPly = snap.ply; bRef = snap.ref; }
     }
     const fast = hist.slice(bPly);
-    const base = new Chess();
-    for (const m of hist.slice(0, bPly)) base.move(m.san);
+    const base = positionAt(bPly);
     const ch = BV.squareChanges(bRef, feat, S.k);
     S.changes = ch;
     const T = settings.threshold;
@@ -1152,7 +1372,7 @@
     S.lastMove = [played.from, played.to];
     logMove(played.san, source);
     S.selected = null;
-    if (source === 'manual') S.ref = null; // эталон снимем заново, когда доска успокоится
+    if (source === 'manual') { S.ref = null; S.netPly = S.chess.history().length; } // эталон снимем заново, когда доска успокоится
     feedback();
     renderBoard();
     renderMoves();
@@ -1165,6 +1385,7 @@
     const m = S.chess.undo();
     if (!m) { toast('Отменять нечего'); return; }
     S.times.pop();
+    S.netPly = S.chess.history().length;
     const hist = S.chess.history({ verbose: true });
     const last = hist[hist.length - 1];
     S.lastMove = last ? [last.from, last.to] : [];
@@ -1584,6 +1805,16 @@
     resetEmpty();
     ai.reset();
     S.aiP = null;
+    S.netP = null;
+    S.netPAt = -1;
+    S.netStale = false;
+    S.netCache = null;
+    S.netRes = null;
+    S.netPly = null;
+    S.netCand = null;
+    S.netAt = -1e9;
+    S.netOpen = false;
+    S.netLostSince = 0;
     S.changes = null;
     S.H = null;
     S.kManual = false;
@@ -1711,7 +1942,7 @@
       video: { width: video.videoWidth || null, height: video.videoHeight || null, recordStartT: S.debug ? S.debug.videoT0 : null, type: S.debug ? S.debug.type : null },
       version: APP_VERSION, corners: S.corners, k: S.k, settings, headers: S.headers,
       camera: S.cam ? { tilt: Math.round(S.cam.tilt * 10) / 10, diff: BV.diffOpts.mode } : null,
-      moves: moveLog, settles: debugLog, quiet: quietLog, history: S.chess.history(), pgn: $('#pgnOut').value,
+      moves: moveLog, settles: debugLog, quiet: quietLog, net: netLog, history: S.chess.history(), pgn: $('#pgnOut').value,
     }, null, 1);
   }
 
@@ -2200,6 +2431,7 @@
     ai,
     /** Покадровая проверка (для повторяемых тестов): свой таймер выключается, кадр — по вызову. */
     manual() { S.manual = true; clearInterval(S.timer); },
+    netLog,
     async step(t) {
       video.pause();
       if (Math.abs(video.currentTime - t) > 1e-4) {
