@@ -112,30 +112,52 @@
     return out;
   }
 
-  function conv(inp, l, S) {
-    const P = S + 2, plane = P * P, C = l.in, O = l.out, W = l.W, k = l.k;
-    const out = new Float32Array(O * plane);
+  /*
+   * Свёртка 3×3 (или 1×1) по буферу с нулевой рамкой. Считаем сразу 4 выходных канала,
+   * сумму держим в переменных: каждое входное значение читается один раз на 4 канала,
+   * а выход записывается один раз (на телефоне это в 2–3 раза быстрее).
+   */
+  function packWeights(l) {
+    if (l.packed) return l.packed;
+    const C = l.in, O = l.out, k = l.k, kk = k * k, G = Math.ceil(O / 4);
+    const pw = new Float32Array(G * C * kk * 4), pb = new Float32Array(G * 4);
     for (let o = 0; o < O; o++) {
-      const ob = o * plane, bias = l.B[o];
-      for (let y = 1; y <= S; y++) out.fill(bias, ob + y * P + 1, ob + y * P + 1 + S);
-      for (let c = 0; c < C; c++) {
-        const ib = c * plane;
-        for (let ky = 0; ky < k; ky++) {
-          for (let kx = 0; kx < k; kx++) {
-            const wv = W[((o * C + c) * k + ky) * k + kx];
-            if (wv === 0) continue;
-            const sh = k === 3 ? (ky - 1) * P + (kx - 1) : 0;
-            for (let y = 1; y <= S; y++) {
-              const oi = ob + y * P + 1, ii = ib + y * P + 1 + sh;
-              for (let x = 0; x < S; x++) out[oi + x] += wv * inp[ii + x];
+      const g = o >> 2, j = o & 3;
+      pb[g * 4 + j] = l.B[o];
+      for (let c = 0; c < C; c++) for (let t = 0; t < kk; t++) pw[((g * C + c) * kk + t) * 4 + j] = l.W[(o * C + c) * kk + t];
+    }
+    l.packed = { pw, pb, G, kk };
+    return l.packed;
+  }
+
+  function conv(inp, l, S) {
+    const P = S + 2, plane = P * P, C = l.in, O = l.out, k = l.k;
+    const { pw, pb, G, kk } = packWeights(l);
+    const out = new Float32Array(O * plane);
+    const offs = new Int32Array(kk);
+    for (let t = 0; t < kk; t++) offs[t] = k === 3 ? ((t / 3 | 0) - 1) * P + (t % 3 - 1) : 0;
+    const relu = l.relu;
+    for (let g = 0; g < G; g++) {
+      const n = Math.min(4, O - g * 4), ob = g * 4 * plane;
+      const b0 = pb[g * 4], b1 = pb[g * 4 + 1], b2 = pb[g * 4 + 2], b3 = pb[g * 4 + 3];
+      const wg = g * C * kk * 4;
+      for (let y = 1; y <= S; y++) {
+        for (let x = 1; x <= S; x++) {
+          const pix = y * P + x;
+          let a0 = b0, a1 = b1, a2 = b2, a3 = b3;
+          let w = wg;
+          for (let c = 0; c < C; c++) {
+            const base = c * plane + pix;
+            for (let t = 0; t < kk; t++, w += 4) {
+              const v = inp[base + offs[t]];
+              a0 += pw[w] * v; a1 += pw[w + 1] * v; a2 += pw[w + 2] * v; a3 += pw[w + 3] * v;
             }
           }
-        }
-      }
-      if (l.relu) {
-        for (let y = 1; y <= S; y++) {
-          const oi = ob + y * P + 1;
-          for (let x = 0; x < S; x++) if (out[oi + x] < 0) out[oi + x] = 0;
+          if (relu) { if (a0 < 0) a0 = 0; if (a1 < 0) a1 = 0; if (a2 < 0) a2 = 0; if (a3 < 0) a3 = 0; }
+          out[ob + pix] = a0;
+          if (n > 1) out[ob + plane + pix] = a1;
+          if (n > 2) out[ob + 2 * plane + pix] = a2;
+          if (n > 3) out[ob + 3 * plane + pix] = a3;
         }
       }
     }
@@ -217,10 +239,11 @@
   /** Запуск в фоне; cb(вероятности) придёт позже. false — поток занят. */
   Background.prototype.run = function (img, H, cb) {
     if (this.busy || this.failed) return false;
-    const x = this.net.rectify(img, H);
+    // кадр копируем и отдаём потоку целиком: выпрямление тоже идёт в фоне
+    const data = img.data.slice().buffer;
     this.busy = true;
     this.cb = cb;
-    this.w.postMessage({ x: x.buffer }, [x.buffer]);
+    this.w.postMessage({ img: data, width: img.width, height: img.height, H: Array.from(H) }, [data]);
     return true;
   };
 
@@ -230,7 +253,8 @@
     self.onmessage = e => {
       try {
         if (e.data.buf) { net = new Net(e.data.buf); return; }
-        const p = net.predict(new Float32Array(e.data.x));
+        const img = { data: new Uint8ClampedArray(e.data.img), width: e.data.width, height: e.data.height };
+        const p = net.predict(net.rectify(img, e.data.H));
         self.postMessage({ p: p.buffer }, [p.buffer]);
       } catch (err) {
         self.postMessage({ error: String(err && err.message || err) });

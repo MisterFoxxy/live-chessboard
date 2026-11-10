@@ -16,13 +16,13 @@
 
   /* ---------- Константы и утилиты ---------- */
 
-  const APP_VERSION = '14 · нейросеть смотрит на доску';
+  const APP_VERSION = '15 · лёгкая сеть, доска lichess';
   const TICK_MS = 33;      // ~30 кадров/с
   const SETTLE_MS = 600;   // полная проверка, когда вся доска неподвижна
   const PROC_W = 640;
   const SAMPLE_OPTS = { samples: 8, margin: 0.12, dropNear: 0.3 };
   const DEFAULT_CORNERS = [[0.25, 0.06], [0.75, 0.06], [0.75, 0.94], [0.25, 0.94]];
-  const PIECE = p => `img/chesspieces/wikipedia/${p}.png`;
+  const PIECE = p => `img/chesspieces/cburnett/${p}.svg`;
 
   const $ = (s, r) => (r || document).querySelector(s);
   const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
@@ -110,9 +110,9 @@
   const netLog = [];   // решения нейросети (для отладочного журнала)
   // Нейросеть, обученная на записях настоящих партий: что стоит на каждой клетке.
   let boardNet = null, netBg = null;
-  window.vcNetReady = BN ? BN.load('models/board-net.bnet?v=14').then(n => {
+  window.vcNetReady = BN ? BN.load('models/board-net.bnet?v=15').then(n => {
     boardNet = n;
-    try { if (typeof Worker === 'function') netBg = new BN.Background('js/board-net.js?v=14', n); } catch (e) { netBg = null; }
+    try { if (typeof Worker === 'function') netBg = new BN.Background('js/board-net.js?v=15', n); } catch (e) { netBg = null; }
     return true;
   }).catch(e => { console.warn(e); return false; }) : Promise.resolve(false);
 
@@ -1044,7 +1044,7 @@
     const b = r.best;
     const e = {
       t: Math.round(video.currentTime * 100) / 100, mask: mask.size, rec: recorded.map(m => m.san).join(' '),
-      best: b.san.join(' '), cost: +b.cost.toFixed(2), recCost: +recCost.toFixed(2), bad: rc.bad.join(','),
+      best: b.san.join(' '), cost: +b.cost.toFixed(2), recCost: +recCost.toFixed(2), bad: rc.bad.join(','), bbad: (b.bad || []).join(','),
       ms, search: Math.round(performance.now() - t0), act: '-',
     };
     netLog.push(e);
@@ -1053,7 +1053,10 @@
     if (b.key === recKey) {
       S.netCand = null;
       S.netOpen = rc.bad.length > 0;
-      if (rc.bad.length) { netLost(t, rc.bad); return null; }
+      // Одну клетку, которую не объясняет ни одна цепочка ходов, считаем ошибкой сети:
+      // она не мешает подтвердить запись, но её эталон не переснимаем.
+      if (rc.bad.length > 1) { netLost(t, rc.bad); return null; }
+      for (const q of rc.bad) mask.add(q);
       netFound();
       // Где картинка изменилась, сеть должна уверенно видеть записанное — иначе эталон
       // не переснимаем (там может быть ход, который сеть видит неуверенно).
@@ -1072,10 +1075,14 @@
       return 'ok';
     }
     S.netOpen = true;
-    const sure = !b.bad.length && recCost - b.cost >= NET_MARGIN && (!r.second || r.second.cost - b.cost >= 1.5);
+    // Клетки, с которыми сеть не согласна и в записи, и в найденной цепочке, — её собственные ошибки
+    // (например, наклонённая фигура на соседней клетке); решению они не мешают, если их не больше двух.
+    const own = (b.bad || []).filter(q => rc.bad.indexOf(q) < 0);
+    const sure = !own.length && b.bad.length <= 2 && recCost - b.cost >= NET_MARGIN + b.bad.length &&
+      (!r.second || r.second.cost - b.cost >= 1.5);
     if (!sure) {
       S.netCand = null;
-      if (rc.bad.length) netLost(t, rc.bad);
+      if (rc.bad.length > 1) netLost(t, rc.bad);
       return null;
     }
     // Ход, обе клетки которого закрыты рукой, проверить нечем.
