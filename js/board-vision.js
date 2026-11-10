@@ -114,12 +114,57 @@
     return null;
   }
 
+  /* ---------- Камера ---------- */
+
+  /**
+   * Восстанавливает камеру по гомографии доски (как в калибровке Чжана): главная точка —
+   * центр кадра, фокус — из того, что оси доски перпендикулярны и равны по длине.
+   * H — гомография «единичный квадрат → пиксели», w×h — размер кадра.
+   * Возвращает project(X, Y, Z) → [x, y] для точки доски в клетках (Z — вверх, к камере).
+   */
+  function cameraFromH(H, w, h) {
+    const Hs = [H[0] / 8, H[1] / 8, H[2], H[3] / 8, H[4] / 8, H[5], H[6] / 8, H[7] / 8, H[8]];
+    const cx = w / 2, cy = h / 2;
+    const col = i => [Hs[i] - cx * Hs[6 + i], Hs[3 + i] - cy * Hs[6 + i], Hs[6 + i]];
+    const [a1, b1, c1] = col(0), [a2, b2, c2] = col(1), [a3, b3, c3] = col(2);
+    const ests = [];
+    if (Math.abs(c1 * c2) > 1e-14) { const f2 = -(a1 * a2 + b1 * b2) / (c1 * c2); if (f2 > 0) ests.push(f2); }
+    const den = c2 * c2 - c1 * c1;
+    if (Math.abs(den) > 1e-14) { const f2 = (a1 * a1 + b1 * b1 - a2 * a2 - b2 * b2) / den; if (f2 > 0) ests.push(f2); }
+    const size = Math.max(w, h);
+    let f = ests.length ? Math.sqrt(ests.reduce((x, y) => x + y, 0) / ests.length) : size;
+    if (!(f > 0.4 * size && f < 4 * size)) f = size;
+    const m1 = [a1 / f, b1 / f, c1], m2 = [a2 / f, b2 / f, c2], m3 = [a3 / f, b3 / f, c3];
+    const lam = 2 / (Math.hypot(...m1) + Math.hypot(...m2));
+    let r1 = m1.map(x => x * lam), r2 = m2.map(x => x * lam), t = m3.map(x => x * lam);
+    if (t[2] < 0) { r1 = r1.map(x => -x); r2 = r2.map(x => -x); t = t.map(x => -x); }
+    let r3 = [r1[1] * r2[2] - r1[2] * r2[1], r1[2] * r2[0] - r1[0] * r2[2], r1[0] * r2[1] - r1[1] * r2[0]];
+    // фигуры стоят со стороны камеры: центр камеры C = -Rᵀt должен иметь Z > 0
+    if (-(r3[0] * t[0] + r3[1] * t[1] + r3[2] * t[2]) < 0) r3 = r3.map(x => -x);
+    const project = (X, Y, Z) => {
+      const px = X * r1[0] + Y * r2[0] + Z * r3[0] + t[0];
+      const py = X * r1[1] + Y * r2[1] + Z * r3[1] + t[1];
+      const pz = X * r1[2] + Y * r2[2] + Z * r3[2] + t[2];
+      return [f * px / pz + cx, f * py / pz + cy];
+    };
+    return { f, project };
+  }
+
+  /** Куда на кадре «наклоняется» вертикальная фигура в точке доски (u, v ∈ [0,1]). */
+  function leanDir(cam, u, v) {
+    if (!cam) return [0, -1];
+    const a = cam.project(u * 8, v * 8, 0), b = cam.project(u * 8, v * 8, 0.5);
+    const dx = b[0] - a[0], dy = b[1] - a[1], n = Math.hypot(dx, dy);
+    return n > 1e-6 ? [dx / n, dy / n] : [0, -1];
+  }
+
   /* ---------- Отпечатки клеток ---------- */
 
   /**
    * План выборки: для каждой клетки — точки внутри неё (в пикселях кадра) и размер
-   * окна усреднения вокруг каждой точки. Ближнюю к камере часть клетки (низ в кадре)
-   * отбрасываем: туда «заходит» высокая фигура с соседней клетки.
+   * окна усреднения вокруг каждой точки. Часть клетки со стороны камеры отбрасываем:
+   * туда «заходит» высокая фигура с соседней клетки. Камера сбоку — это низ клетки
+   * в кадре, камера сверху — сторона, обращённая к центру кадра (opts.camera).
    * H — гомография «единичный квадрат → пиксели кадра».
    */
   function samplePlan(H, opts) {
@@ -129,9 +174,11 @@
     const keep = Math.max(1, Math.round(n * n * (1 - (opts.dropNear != null ? opts.dropNear : 0.3))));
     const xs = new Float32Array(64 * keep), ys = new Float32Array(64 * keep), rs = new Uint8Array(64 * keep);
     const step = (1 - 2 * m) / n / 8;
+    const cam = opts.camera || null;
     for (let r = 0; r < 8; r++) {
       for (let c = 0; c < 8; c++) {
         const pts = [];
+        const [ldx, ldy] = leanDir(cam, (c + 0.5) / 8, (r + 0.5) / 8);
         for (let i = 0; i < n; i++) {
           const v = (r + m + (1 - 2 * m) * (i + 0.5) / n) / 8;
           for (let j = 0; j < n; j++) {
@@ -139,10 +186,10 @@
             const p = applyH(H, u, v);
             const pu = applyH(H, u + step, v), pv = applyH(H, u, v + step);
             const span = Math.min(Math.hypot(pu[0] - p[0], pu[1] - p[1]), Math.hypot(pv[0] - p[0], pv[1] - p[1]));
-            pts.push([p[0], p[1], Math.max(0, Math.min(6, Math.round(span / 2 - 0.25)))]);
+            pts.push([p[0], p[1], Math.max(0, Math.min(6, Math.round(span / 2 - 0.25))), p[0] * ldx + p[1] * ldy]);
           }
         }
-        pts.sort((a, b) => a[1] - b[1]); // сверху вниз по кадру; нижние (ближние) отбрасываем
+        pts.sort((a, b) => b[3] - a[3]); // по направлению наклона фигур; ближние к камере отбрасываем
         const o = (r * 8 + c) * keep;
         for (let i = 0; i < keep; i++) { xs[o + i] = pts[i][0]; ys[o + i] = pts[i][1]; rs[o + i] = pts[i][2]; }
       }
@@ -378,37 +425,49 @@
   }
 
   /**
-   * Клетки, которые может заслонить фигура, стоящая на данной клетке.
-   * Фигура в кадре — вертикальный «силуэт» над центром клетки высотой примерно
-   * в ширину клетки. Чем ниже камера, тем больше клеток он накрывает.
+   * Клетки, которые может заслонить фигура, стоящая на данной клетке: проецируем
+   * «цилиндр» высотой примерно с клетку. С моделью камеры (opts.camera) это честная
+   * проекция; без неё — силуэт вверх по кадру.
    * При появлении/уходе фигуры эти клетки тоже меняются — это не должно мешать
    * распознать ход. H — гомография единичного квадрата в кадр, k — ориентация.
    * Возвращает {square: [squares]}.
    */
   function occlusionMap(H, k, opts) {
     opts = opts || {};
+    const cam = opts.camera || null;
     const heightK = opts.height || 1.1, widthK = opts.width || 0.7;
     const quad = UNIT.map(p => applyH(H, p[0], p[1]));
     const Hinv = computeHomography(quad, UNIT);
     const map = {};
     for (const sq of SQUARES) {
       const cell = CELL_OF[k & 3][sq], r = cell >> 3, c = cell & 7;
-      const p = applyH(H, (c + 0.5) / 8, (r + 0.5) / 8);
-      const a = applyH(H, (c + 1.5) / 8, (r + 0.5) / 8), b = applyH(H, (c + 0.5) / 8, (r + 1.5) / 8);
-      const w = Math.max(Math.hypot(a[0] - p[0], a[1] - p[1]), Math.hypot(b[0] - p[0], b[1] - p[1]));
       const hits = {};
-      for (let i = 1; i <= 8; i++) {
-        const y = p[1] - w * heightK * i / 8;
-        for (let j = -2; j <= 2; j++) {
-          const x = p[0] + w * widthK * j / 4;
-          const q = applyH(Hinv, x, y);
-          const cc = Math.floor(q[0] * 8), rr = Math.floor(q[1] * 8);
-          if (cc < 0 || cc > 7 || rr < 0 || rr > 7 || (cc === c && rr === r)) continue;
-          const key = rr * 8 + cc;
-          hits[key] = (hits[key] || 0) + 1;
+      const hit = (x, y) => {
+        const q = applyH(Hinv, x, y);
+        const cc = Math.floor(q[0] * 8), rr = Math.floor(q[1] * 8);
+        if (cc < 0 || cc > 7 || rr < 0 || rr > 7 || (cc === c && rr === r)) return;
+        hits[rr * 8 + cc] = (hits[rr * 8 + cc] || 0) + 1;
+      };
+      if (cam) {
+        for (let i = 1; i <= 8; i++) {
+          const z = heightK * i / 8;
+          for (let j = -2; j <= 2; j++) {
+            for (let l = -2; l <= 2; l += 2) {
+              const p = cam.project(c + 0.5 + widthK * j / 4 * 0.5, r + 0.5 + widthK * l / 4 * 0.5, z);
+              hit(p[0], p[1]);
+            }
+          }
         }
+        map[sq] = Object.keys(hits).filter(key => hits[key] >= 4).map(key => cellToSquare(+key, k));
+      } else {
+        const p = applyH(H, (c + 0.5) / 8, (r + 0.5) / 8);
+        const a = applyH(H, (c + 1.5) / 8, (r + 0.5) / 8), b = applyH(H, (c + 0.5) / 8, (r + 1.5) / 8);
+        const w = Math.max(Math.hypot(a[0] - p[0], a[1] - p[1]), Math.hypot(b[0] - p[0], b[1] - p[1]));
+        for (let i = 1; i <= 8; i++) {
+          for (let j = -2; j <= 2; j++) hit(p[0] + w * widthK * j / 4, p[1] - w * heightK * i / 8);
+        }
+        map[sq] = Object.keys(hits).filter(key => hits[key] >= 3).map(key => cellToSquare(+key, k));
       }
-      map[sq] = Object.keys(hits).filter(key => hits[key] >= 3).map(key => cellToSquare(+key, k));
     }
     return map;
   }
@@ -681,6 +740,7 @@
     // (а не рука накрыла обе клетки разом).
     const ready1 = m => {
       const sq = squaresOfMove(m);
+      if (sq.some(isHand)) { why(m, 'hand-on-square'); return false; } // клетку хода закрывает рука
       if (!sq.every(s => readySet.has(s))) {
         why(m, 'not-ready ' + sq.map(s => s + ':' + Math.round(changes[s]) + '/' + Math.round(opts.stillMs[s])).join(' '));
         return false;
@@ -832,7 +892,7 @@
 
   return {
     FILES, SQUARES, UNIT,
-    computeHomography, applyH, orderQuad, isConvexQuad,
+    computeHomography, applyH, orderQuad, isConvexQuad, cameraFromH,
     squareToCell, cellToSquare,
     samplePlan, sampleWithPlan, sampleBoard, averageFeatures, cellDiff, cellStats,
     cloneFeatures, copyCells,

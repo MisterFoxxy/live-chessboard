@@ -15,6 +15,7 @@
 
   /* ---------- Константы и утилиты ---------- */
 
+  const APP_VERSION = '5 · автопоиск доски, камера сверху, отладочное видео';
   const TICK_MS = 33;      // ~30 кадров/с
   const SETTLE_MS = 600;   // полная проверка, когда вся доска неподвижна
   const PROC_W = 640;
@@ -342,7 +343,8 @@
       if (S.badQuad) return null;
       S.H = BV.computeHomography(BV.UNIT, q.map(p => [p[0] * w, p[1] * h]));
       if (!S.H) return null;
-      S.plan = BV.samplePlan(S.H, SAMPLE_OPTS);
+      S.cam = BV.cameraFromH(S.H, w, h); // где камера: куда на кадре наклоняются фигуры
+      S.plan = BV.samplePlan(S.H, Object.assign({ camera: S.cam }, SAMPLE_OPTS));
       S.occ = null;
     }
     return BV.sampleWithPlan(img, S.plan);
@@ -446,7 +448,7 @@
   }
 
   function ensureOcc() {
-    if (!S.occ || S.occK !== S.k) { S.occ = BV.occlusionMap(S.H, S.k); S.occK = S.k; }
+    if (!S.occ || S.occK !== S.k) { S.occ = BV.occlusionMap(S.H, S.k, { camera: S.cam }); S.occK = S.k; }
   }
 
   /** Новый эталон: доска сейчас совпадает с позицией на цифровой доске. */
@@ -1321,18 +1323,21 @@
     setTimeout(() => URL.revokeObjectURL(url), 5000);
   }
 
+  // Блок «отправить для отладки» показываем после каждой партии: журнал есть всегда, видео — если удалось записать.
   function updateDebugCard() {
     const D = S.debug;
     const card = $('#debugCard');
     if (!card) return;
-    card.hidden = !D;
-    if (!D) return;
-    const ready = !!D.blob;
-    $('#btnSendDebug').disabled = !ready;
+    card.hidden = false;
+    const ready = !!(D && D.blob);
+    $('#btnDebugVideo').hidden = !D;
+    $('#btnSendDebug').disabled = !!D && !ready;
     $('#btnDebugVideo').disabled = !ready;
-    $('#debugInfo').textContent = ready
-      ? `Видео: ${(D.blob.size / 1048576).toFixed(1)} МБ` + (D.bytes > DEBUG_MAX_BYTES ? ' (записано только начало партии)' : '')
-      : 'Готовлю видео…';
+    $('#debugInfo').textContent = !D
+      ? (settings.saveVideo ? 'Этот браузер не смог записать видео — отправьте хотя бы журнал.' : 'Запись видео выключена в настройках — отправьте журнал.')
+      : ready
+        ? `Видео: ${(D.blob.size / 1048576).toFixed(1)} МБ` + (D.bytes > DEBUG_MAX_BYTES ? ' (записано только начало партии)' : '')
+        : 'Готовлю видео…';
   }
 
   function fileName(pgn) {
@@ -1380,6 +1385,7 @@
 
   function bind() {
     $('#metaDate').textContent = formatDate(Date.now());
+    $('#appVersion').textContent = APP_VERSION;
     fillForm(store.get('vc_form', {}));
 
     $('#btnCamera').addEventListener('click', () => openRecorder('camera'));
@@ -1554,5 +1560,23 @@
     motionLog,
     moves: moveLog,
     ai,
+    /** Начать запись с произвольной позиции (FEN) и известной ориентации доски (для проверки на роликах). */
+    startFrom(fen, k) {
+      const c = new Chess();
+      if (!c.load(fen)) return false;
+      S.chess = c;
+      S.times = [];
+      S.lastMove = [];
+      S.k = k & 3;
+      S.kManual = true;
+      S.autoDetect = false;
+      S.ref = null;
+      S.fullRef = null;
+      tracker.reset();
+      S.phase = 'ready';
+      renderBoard();
+      renderMoves();
+      return true;
+    },
   };
 })();
