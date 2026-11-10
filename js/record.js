@@ -15,7 +15,7 @@
 
   /* ---------- Константы и утилиты ---------- */
 
-  const APP_VERSION = '11 · отчёты на GitHub: адрес вписан, токен по ссылке';
+  const APP_VERSION = '12 · ИИ проверяет, что стоит на клетках';
   const TICK_MS = 33;      // ~30 кадров/с
   const SETTLE_MS = 600;   // полная проверка, когда вся доска неподвижна
   const PROC_W = 640;
@@ -58,19 +58,19 @@
       if (audioCtx.state === 'suspended') audioCtx.resume();
     } catch (e) { audioCtx = null; }
   }
-  function feedback() {
+  function feedback(alarm) {
     if (!settings.sound) return;
     try {
       if (audioCtx) {
         const o = audioCtx.createOscillator(), g = audioCtx.createGain();
-        o.frequency.value = 880;
+        o.frequency.value = alarm ? 330 : 880; // низкий звук — «не понял ход»
         g.gain.setValueAtTime(0.08, audioCtx.currentTime);
         g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.12);
         o.connect(g); g.connect(audioCtx.destination);
         o.start(); o.stop(audioCtx.currentTime + 0.12);
       }
     } catch (e) { /* ignore */ }
-    if (navigator.vibrate) navigator.vibrate(35);
+    if (navigator.vibrate) navigator.vibrate(alarm ? [60, 80, 60] : 35);
   }
 
   let wakeLock = null;
@@ -142,6 +142,8 @@
     firstChange: {},     // клетка → когда на ней впервые что-то замерло после проверки (порядок ходов)
     quietAt: -1,         // какую паузу уже проверили
     weakCand: null,      // позиция со слабыми признаками и с какого момента она лучшая: {fen, since}
+    lostSince: 0,        // с какого момента запись не сходится с тем, что видит ИИ
+    lostWarned: false,
     settled: null,       // как выглядела каждая клетка, когда в последний раз замирала
     events: {},          // клетка → моменты, когда она замирала в новом виде (рядом без руки)
     darkCal: null,       // порог «чёрная фигура» по тёмному уровню клетки
@@ -767,24 +769,28 @@
       if (bc && !isLight(sq)) { const v = BV.brightLevel(steady, cell), m = bc.gap * 0.2; w = v > bc.thr + m ? true : v < bc.thr - m ? false : null; }
       return { b, w };
     } : null;
+    const aiP = settings.ai && ai.ready() ? S.aiP : null;
+    const aiOf = aiP ? sq => aiP[BV.squareToCell(sq, S.k)] : null;
     const t0 = performance.now();
     const r = BV.findSequence(base, ch, {
-      threshold: T, occ: S.occ, active, order: S.firstChange, events: S.events, colorOf, mask,
+      threshold: T, occ: S.occ, active, order: S.firstChange, events: S.events, colorOf, mask, aiOf,
       recorded: recorded.map(m => m.san), maxPlies: 8, maxNodes: 2000,
       probe: window.vcExpected ? [window.vcExpected.slice(S.basePly, S.basePly + Math.max(1, recorded.length, 0) + 0),
         window.vcExpected.slice(S.basePly, S.basePly + 5)] : null,
     });
     const b = r.best;
     if (!b) return false;
+    const rec = r.recorded;
     const qe = {
       t: Math.round(video.currentTime * 100) / 100, mask: mask.size, best: b.san.join(' '), cost: b.cost,
-      u: b.unexplained, m: b.missing, c: b.conflict, n: b.noise,
+      u: b.unexplained, m: b.missing, c: b.conflict, n: b.noise, ai: b.aiMis,
       rec: r.recorded ? r.recorded.cost : null, alt: r.alt ? r.alt.cost : null, act: '-',
     };
     if (recorded.length || b.plies || b.unexplained) { quietLog.push(qe); if (quietLog.length > 300) quietLog.shift(); }
     if (window.vcQuietTrace) {
-      const f = c => c ? `${c.san.join(' ')} [u${c.unexplained} b${c.bumped} i${c.indirect} v${c.unverified} m${c.missing} w${c.weak} c${c.conflict}${c.conflictAt.length ? '(' + c.conflictAt.join(',') + ')' : ''} n${c.noise}(${c.noiseAt.join(',')}) inv${c.inv} cost${c.cost}]` : '-';
-      window.vcQuietTrace.push(`${video.currentTime.toFixed(2)} mask ${Array.from(mask).join(',') || '-'} best ${f(b)} alt ${f(r.alt)} rec ${f(r.recorded)} ${(r.probes || []).map(p => 'probe ' + f(p)).join(' ')} nodes ${r.nodes} ${Math.round(performance.now() - t0)}ms top ` +
+      const f = c => c ? `${c.san.join(' ')} [u${c.unexplained} b${c.bumped} i${c.indirect} v${c.unverified} m${c.missing} w${c.weak} a${c.aiMis}${c.aiMisAt && c.aiMisAt.length ? '(' + c.aiMisAt.join(',') + ')' : ''} c${c.conflict}${c.conflictAt.length ? '(' + c.conflictAt.join(',') + ')' : ''} n${c.noise}(${c.noiseAt.join(',')}) inv${c.inv} cost${c.cost}]` : '-';
+      const pr = q => { const p = aiOf && aiOf(q); return p ? q + '=' + Array.from(p).map(x => Math.round(x * 100)).join('/') : q + '=-'; };
+      window.vcQuietTrace.push(`${video.currentTime.toFixed(2)} AI[${b.moves.map(m => pr(m.to)).join(' ')}] mask ${Array.from(mask).join(',') || '-'} best ${f(b)} alt ${f(r.alt)} rec ${f(r.recorded)} ${(r.probes || []).map(p => 'probe ' + f(p)).join(' ')} nodes ${r.nodes} ${Math.round(performance.now() - t0)}ms top ` +
         Object.entries(ch).sort((x, y) => y[1] - x[1]).slice(0, 8).map(([q, v]) => q + ':' + v.toFixed(0)).join(' '));
     }
     // Другая позиция объясняет картину почти так же (например, под рукой не видно, пешка
@@ -798,10 +804,46 @@
     // Мелкий шум допустим, и тем больше, чем больше клеток изменили ходы (тени, наклоны).
     const clean = !ambiguous && b.unexplained === 0 && b.missing === 0 && b.conflict === 0 &&
       b.noise <= 2 + b.bumped + Math.floor(b.req.length / 4) && b.bumped <= 2;
+    // ИИ уверенно видит на изменившихся клетках то же, что в записи (сменился свет, камера
+    // перенастроила экспозицию, фигуру поправили) — эталон этих клеток устарел, переснимаем их.
+    if (!clean && aiOf) {
+      const sure = q => {
+        const p = aiOf(q);
+        if (!p || p[3] >= 0.5) return -1;
+        let c = 0;
+        for (let k = 1; k < 3; k++) if (p[k] > p[c]) c = k;
+        return p[c] >= 0.9 ? c : -1;
+      };
+      const content = q => { const x = S.chess.get(q); return x ? (x.color === 'w' ? 1 : 2) : 0; };
+      const busy = new Set(b.req.concat(b.opt));
+      const stale = b.unexplainedAt.concat(b.noiseAt).filter(q => !mask.has(q) && !busy.has(q) && sure(q) === content(q));
+      if (stale.length) {
+        const cells = stale.map(q => BV.squareToCell(q, S.k));
+        BV.copyCells(S.fullRef, steady, cells);
+        BV.copyCells(S.ref, steady, cells);
+        if (S.settled) BV.copyCells(S.settled, steady, cells);
+        logMove(stale.length + ' cells (ai)', 'absorb');
+        S.quietAt = -1; // проверим ещё раз уже с обновлённым эталоном
+        return false;
+      }
+    }
+    // Запись не сходится с тем, что видит ИИ, и исправить не получается — сообщаем сразу,
+    // чтобы ход поправили на цифровой доске, а не узнали о сбое в конце партии.
+    const recMis = rec ? rec.aiMis : 0;
+    if (!clean && recMis >= 2) {
+      if (!S.lostSince) S.lostSince = t;
+      else if (t - S.lostSince > 3000 && !S.lostWarned) {
+        S.lostWarned = true;
+        S.warn = { text: 'Не понял ход — проверьте доску: ' + rec.aiMisAt.slice(0, 4).join(', '), until: Date.now() + 8000 };
+        feedback(true);
+      }
+    } else if (clean) {
+      S.lostSince = 0;
+      S.lostWarned = false;
+    }
     if (!clean) return false;
     // Исправляем, если найденное заметно лучше; или те же ходы в другом порядке — и порядок
     // лучше сходится с тем, когда менялись клетки.
-    const rec = r.recorded;
     const reorder = !!rec && !b.isRecorded && rec.fen === b.fen && b.inv < rec.inv && b.cost <= rec.cost + 0.5;
     // Новые ходы добавляем только по явным изменениям: слабые (сдвинули телефон, тень) не в счёт.
     // Ход, обе клетки которого закрыты рукой, проверить нечем — такие исправления не принимаем.
@@ -819,7 +861,23 @@
       if (S.weakCand && S.weakCand.fen === b.fen) weakOk = t - S.weakCand.since >= 1500;
       else S.weakCand = { fen: b.fen, since: t };
     }
-    const fix = !b.isRecorded && !hiddenMove && !(rewrites && mask.size > 12) &&
+    // Новый ход не добавляем, если ИИ (обученный на этой партии) уверенно видит на клетке назначения
+    // другое — пусто или фигуру другого цвета: значит, это рука или тень, «объяснённая» ходом.
+    const unconfirmed = !!aiOf && b.moves.some((m, i) => {
+      if (i < keep || mask.has(m.to)) return false;
+      const fin = new Chess(b.fen + ' 0 1').get(m.to);
+      if (!fin || fin.color !== m.color) return false; // фигуру потом побили — проверять нечего
+      const p = aiOf(m.to);
+      if (!p || p[AI.HAND] >= 0.5) return false;
+      // ИИ почти исключает фигуру этого цвета и видит там другое (пусто или фигуру другого цвета)
+      const mine = p[m.color === 'w' ? AI.WHITE : AI.BLACK];
+      const other = p[AI.EMPTY] + p[m.color === 'w' ? AI.BLACK : AI.WHITE];
+      if (mine < 0.1 && other >= 0.6) return true;
+      // клетку, откуда «ушла» фигура, закрывает лежащая рука — тогда нужен явный признак фигуры на месте
+      const pf = aiOf(m.from);
+      return !!pf && pf[AI.HAND] >= 0.5 && mine < 0.5;
+    });
+    const fix = !b.isRecorded && !hiddenMove && !unconfirmed && !(rewrites && mask.size > 12) &&
       (!rec || rec.cost > b.cost + 2 || reorder) && (weakOk || reorder);
     if (!fix && !b.isRecorded) return false;
     qe.act = fix ? 'fix' : 'ok';
