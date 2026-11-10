@@ -523,7 +523,9 @@
     const report = { changed: ctx.changed, strong: ctx.strong };
     if (!ctx.changed.length) return Object.assign({ type: 'none' }, report);
 
-    const fits = m => squaresOfMove(m).every(s => changes[s] >= T);
+    // клетки, закрытые рукой (по мнению ИИ), не могут быть клетками хода
+    const handAt = s => { const p = opts.classOf && opts.classOf(s); return !!p && p[3] >= 0.5; };
+    const fits = m => squaresOfMove(m).every(s => changes[s] >= T && !handAt(s));
     const ok = c => c && c.unexplained <= 1 && c.noise <= maxExtra;
 
     const firstMoves = uniqueMoves(chess.moves({ verbose: true })).filter(fits);
@@ -657,7 +659,11 @@
     const all = Object.keys(changes);
     // Готовые клетки: изменились и неподвижны. Клетки недавних ходов (ignore) могут
     // участвовать в ходе (взятие в ответ), но не считаются «лишними» изменениями.
-    const ready = all.filter(s => stillOk(s) && changes[s] >= T);
+    // Быстрая фиксация рискованнее проверки — клетки хода должны измениться уверенно.
+    const ready = all.filter(s => stillOk(s) && changes[s] >= T * (opts.fastFactor || 2));
+    // Слабо изменившиеся, но неподвижные клетки: годятся для пропущенного хода в паре,
+    // если за ним последовал уверенный ответ.
+    const weakSet = new Set(all.filter(s => stillOk(s) && changes[s] >= T));
     if (opts.trace) opts.trace.reasons.push('ready=' + ready.join(','));
     if (ready.length < 2) return null;
     const readySet = new Set(ready);
@@ -738,10 +744,10 @@
     };
     // Все клетки хода готовы, и фигуру сначала подняли, потом поставили
     // (а не рука накрыла обе клетки разом).
-    const ready1 = m => {
+    const ready1 = (m, weak) => {
       const sq = squaresOfMove(m);
       if (sq.some(isHand)) { why(m, 'hand-on-square'); return false; } // клетку хода закрывает рука
-      if (!sq.every(s => readySet.has(s))) {
+      if (!sq.every(s => (weak ? weakSet : readySet).has(s))) {
         why(m, 'not-ready ' + sq.map(s => s + ':' + Math.round(changes[s]) + '/' + Math.round(opts.stillMs[s])).join(' '));
         return false;
       }
@@ -787,9 +793,10 @@
     const one = pick(singles, '');
     if (one) return one;
 
-    // Ход и мгновенный ответ соперника.
+    // Ход и мгновенный ответ соперника (первый ход может быть слабым — его пропустили).
     const pairs = [];
-    for (const m1 of firsts) {
+    const firstsWeak = uniqueMoves(legal).filter(m => !castlingPrefix(legal, m) && ready1(m, true));
+    for (const m1 of firstsWeak) {
       if (!chess.move({ from: m1.from, to: m1.to, promotion: m1.promotion })) continue;
       const lifted1 = parts(m1).lifted, placed1 = Math.min(...parts(m1).dests.map(s => opts.onset[s]));
       for (const m2 of uniqueMoves(chess.moves({ verbose: true }))) {
@@ -810,9 +817,14 @@
     /**
      * opts.settleMs — сколько миллисекунд доска должна быть неподвижной после движения.
      * Время передаётся в push() снаружи, поэтому поведение не зависит от частоты кадров.
+     * Порог движения у каждой клетки свой: он подстраивается под её обычный шум
+     * (сжатие видео, дрожание текстуры), поэтому на реальной съёмке шум не считается рукой.
      */
     constructor(opts) {
-      this.opts = Object.assign({ settleMs: 700, minFrames: 2, keepFrames: 6, motionMin: 5, motionMax: 18, motionK: 3, rank: 1 }, opts);
+      this.opts = Object.assign({
+        settleMs: 700, minFrames: 2, keepFrames: 6,
+        motionMin: 5, motionMax: 45, motionK: 2, noiseWindow: 120, noisePct: 0.1,
+      }, opts);
       this.reset();
     }
 
@@ -823,9 +835,15 @@
       this.stable = [];
       this.stableSince = 0;
       this.now = 0;
-      this.noise = null;
       this.lastMotion = 0;
       this.since = new Float64Array(64); // когда клетка двигалась последний раз
+      const n = this.opts.noiseWindow;
+      this.hist = new Float32Array(64 * n); // покадровые изменения клеток за последние n кадров
+      this.histLen = 0;
+      this.histPos = 0;
+      this.frames = 0;
+      this.cellThr = new Float32Array(64).fill(this.opts.motionMin);
+      this.lastCells = new Float32Array(64);
     }
 
     /** Сколько мс клетка неподвижна. */
@@ -834,8 +852,19 @@
     }
 
     threshold() {
-      const t = Math.max(this.opts.motionMin, (this.noise || 0) * this.opts.motionK);
-      return Math.min(t, this.opts.motionMax);
+      return median(this.cellThr);
+    }
+
+    updateThresholds() {
+      const n = this.opts.noiseWindow, len = this.histLen;
+      if (!len) return;
+      const buf = new Float32Array(len), k = Math.floor(len * this.opts.noisePct);
+      for (let c = 0; c < 64; c++) {
+        for (let i = 0; i < len; i++) buf[i] = this.hist[c * n + i];
+        buf.sort();
+        const noise = buf[k];
+        this.cellThr[c] = Math.min(this.opts.motionMax, Math.max(this.opts.motionMin, noise * this.opts.motionK + this.opts.motionMin));
+      }
     }
 
     /**
@@ -853,18 +882,27 @@
         return { motion: 0, moving: false, settled: null, threshold: this.threshold() };
       }
       const cells = cellDiff(feat, this.prev);
-      const motion = kthLargest(cells, this.opts.rank);
       this.prev = feat;
+      this.lastCells = cells;
+      const n = this.opts.noiseWindow;
+      for (let c = 0; c < 64; c++) this.hist[c * n + this.histPos] = cells[c];
+      this.histPos = (this.histPos + 1) % n;
+      this.histLen = Math.min(n, this.histLen + 1);
+      if (this.frames++ % 5 === 0) this.updateThresholds();
+      let motion = 0, movingCells = 0;
+      for (let c = 0; c < 64; c++) {
+        if (cells[c] > this.cellThr[c]) {
+          this.since[c] = t;
+          movingCells++;
+          motion = Math.max(motion, cells[c]);
+        }
+      }
       this.lastMotion = motion;
       const thr = this.threshold();
-      for (let c = 0; c < 64; c++) if (cells[c] > thr) this.since[c] = t;
-      if (motion > thr) {
+      if (movingCells) {
         this.moving = true;
         this.stable = [];
         return { motion, moving: true, settled: null, threshold: thr };
-      }
-      if (motion < thr * 0.5 || this.noise == null) {
-        this.noise = this.noise == null ? motion : this.noise * 0.95 + motion * 0.05;
       }
       if (!this.stable.length) this.stableSince = t;
       this.stable.push(feat);
