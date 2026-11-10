@@ -15,7 +15,7 @@
 
   /* ---------- Константы и утилиты ---------- */
 
-  const APP_VERSION = '7 · быстрая игра одной рукой, чёрные фигуры на тёмных клетках';
+  const APP_VERSION = '8 · светлые фигуры на светлых клетках, цвет фигуры на тёмных клетках';
   const TICK_MS = 33;      // ~30 кадров/с
   const SETTLE_MS = 600;   // полная проверка, когда вся доска неподвижна
   const PROC_W = 640;
@@ -144,6 +144,7 @@
     settled: null,       // как выглядела каждая клетка, когда в последний раз замирала
     events: {},          // клетка → моменты, когда она замирала в новом виде (рядом без руки)
     darkCal: null,       // порог «чёрная фигура» по тёмному уровню клетки
+    brightCal: null,     // порог «светлая фигура на тёмной клетке»
     pending: new Set(),  // клетки, чей эталон устарел (менялись под рукой) — переснимаем, когда видны
     empty: { feat: null, known: new Set() }, // как выглядят пустые клетки (по номерам клеток кадра)
     aiP: null,           // вероятности ИИ по клеткам кадра: [пусто, белая, чёрная, рука]
@@ -359,7 +360,9 @@
       BV.diffOpts.mode = S.cam.tilt < QUIET_MAX_TILT ? 'rel' : 'plain';
       // Повторы кадра (видеофайл обрабатывается быстрее, чем идут кадры) не считаем шумом.
       tracker.opts.skipDup = !window.vcKeepDup && S.cam.tilt < QUIET_MAX_TILT;
-      S.plan = BV.samplePlan(S.H, Object.assign({ camera: S.cam }, SAMPLE_OPTS));
+      // Сверху наклон фигур мал и по форме доски определяется ненадёжно — берём всю клетку.
+      const topDown = S.cam.tilt < QUIET_MAX_TILT;
+      S.plan = BV.samplePlan(S.H, Object.assign({ camera: S.cam }, SAMPLE_OPTS, topDown ? { dropNear: 0 } : {}));
       S.occ = null;
     }
     return BV.sampleWithPlan(img, S.plan);
@@ -395,9 +398,12 @@
       if (motionLog.length > 900) motionLog.shift();
       const now = performance.now();
       if (S.phase === 'setup') {
-        if (tracker.isSteady() && now - S.lastRecogAt > 300) {
+        // Для поиска начальной позиции доска должна быть спокойна, но 1–2 мерцающие клетки
+        // (край кадра, сжатие видео, лампа) не мешают: рука над доской задевает больше клеток.
+        const topDown = !!S.cam && S.cam.tilt < QUIET_MAX_TILT;
+        if ((tracker.isSteady() || (topDown && cellsMoving(300) <= 2)) && now - S.lastRecogAt > 300) {
           S.lastRecogAt = now;
-          recognize(tracker.steadyFeatures());
+          recognize(tracker.isSteady() ? tracker.steadyFeatures() : feat);
         }
       } else if (!S.ref) {
         if (tracker.isSteady()) setBase(tracker.steadyFeatures());
@@ -411,6 +417,13 @@
     updateAIInfo();
     drawOverlay();
     S.tickMs = S.tickMs * 0.9 + (performance.now() - t0) * 0.1;
+  }
+
+  /** Сколько клеток двигались за последние ms миллисекунд. */
+  function cellsMoving(ms) {
+    let n = 0;
+    for (let c = 0; c < 64; c++) if (tracker.now - tracker.since[c] < ms) n++;
+    return n;
   }
 
   function startLoop() {
@@ -492,6 +505,13 @@
       return p ? p.color : '';
     });
     if (cal) S.darkCal = cal;
+    const bcal = BV.calibrateBright(feat, cell => {
+      const sq = BV.cellToSquare(cell, S.k);
+      if (S.pending.has(sq)) return 'x';
+      const p = S.chess.get(sq);
+      return p ? p.color : '';
+    }, cell => !isLight(BV.cellToSquare(cell, S.k)));
+    if (bcal) S.brightCal = bcal;
     // Запоминаем, как выглядят пустые клетки, — это помогает отличить «фигура ушла» от «пришла».
     if (!S.empty.feat) S.empty.feat = { n: feat.n, per: feat.per, data: new Float32Array(feat.data.length), mean: feat.mean };
     const cells = [];
@@ -736,10 +756,13 @@
     for (const sq of BV.SQUARES) if (ch[sq] >= T * 0.7) active.add(sq);
     for (const sq of mask) active.add(sq);
     for (const m of recorded) for (const q of BV.squaresOfMove(m)) active.add(q);
-    const cal = S.darkCal;
-    const colorOf = cal ? sq => {
-      const v = BV.darkLevel(steady, BV.squareToCell(sq, S.k)), m = cal.gap * 0.2;
-      return v < cal.thr - m ? 'b' : v > cal.thr + m ? 'n' : null;
+    const cal = S.darkCal, bc = S.brightCal;
+    const colorOf = (cal || bc) ? sq => {
+      const cell = BV.squareToCell(sq, S.k);
+      let b = null, w = null;
+      if (cal) { const v = BV.darkLevel(steady, cell), m = cal.gap * 0.2; b = v < cal.thr - m ? true : v > cal.thr + m ? false : null; }
+      if (bc && !isLight(sq)) { const v = BV.brightLevel(steady, cell), m = bc.gap * 0.2; w = v > bc.thr + m ? true : v < bc.thr - m ? false : null; }
+      return { b, w };
     } : null;
     const t0 = performance.now();
     const r = BV.findSequence(base, ch, {
@@ -778,7 +801,10 @@
     const rec = r.recorded;
     const reorder = !!rec && !b.isRecorded && rec.fen === b.fen && b.inv < rec.inv && b.cost <= rec.cost + 0.5;
     // Новые ходы добавляем только по явным изменениям: слабые (сдвинули телефон, тень) не в счёт.
-    const fix = !b.isRecorded && (!rec || rec.cost > b.cost + 1 || reorder) && (b.weak === 0 || reorder);
+    // Ход, обе клетки которого закрыты рукой, проверить нечем — такие исправления не принимаем.
+    const hiddenMove = b.moves.some((m, i) => mask.has(m.from) && mask.has(m.to) &&
+      !(recorded[i] && recorded[i].from === m.from && recorded[i].to === m.to));
+    const fix = !b.isRecorded && !hiddenMove && (!rec || rec.cost > b.cost + 2 || reorder) && (b.weak === 0 || reorder);
     if (!fix && !b.isRecorded) return false;
     qe.act = fix ? 'fix' : 'ok';
     if (fix) {
@@ -817,6 +843,9 @@
     const hidden = Array.from(mask).filter(q => S.pending.has(q) || code(base, q) !== code(S.chess, q));
     const nf = BV.cloneFeatures(steady);
     BV.copyCells(nf, S.fullRef, Array.from(mask).map(q => BV.squareToCell(q, S.k)));
+    // Необъяснённые изменения в эталон не впитываем: это может быть половина хода, вторая
+    // половина которого сейчас видна слабо (светлая пешка на светлой клетке в тени руки).
+    BV.copyCells(nf, S.fullRef, b.noiseAt.filter(q => !mask.has(q)).map(q => BV.squareToCell(q, S.k)));
     setBase(nf, hidden);
     for (const q of hidden) S.recent.add(q);
     if (hidden.length) S.refine = { squares: new Set(hidden), at: t };
@@ -900,9 +929,11 @@
     const legal = S.chess.moves({ verbose: true });
     const cells = [];
     for (const sq of stale) {
+      // клетка может быть частью хода, другие клетки которого видны слабо — такую не впитываем
+      const part = S.cam && S.cam.tilt < QUIET_MAX_TILT ? 0.5 : 1; // сверху светлые фигуры видны слабо
       const used = legal.some(m => {
         const q = BV.squaresOfMove(m);
-        return q.indexOf(sq) >= 0 && q.every(x => ch.bySquare[x] >= T);
+        return q.indexOf(sq) >= 0 && q.every(x => ch.bySquare[x] >= T * part);
       });
       if (used) continue;
       cells.push(BV.squareToCell(sq, S.k));
