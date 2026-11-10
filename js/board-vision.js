@@ -1421,13 +1421,145 @@
     }
   }
 
+  /**
+   * Ходы по нейросети (BoardNet). Ищем цепочку легальных ходов до maxPlies от позиции chess,
+   * итоговая расстановка которой лучше всего совпадает с тем, что видит сеть.
+   * probs(square) → [пусто, белая, чёрная] или null (клетку сейчас не видно — рука).
+   * Цена позиции: сумма по видимым клеткам −ln P(содержимое клетки) (не больше cap на клетку)
+   * плюс ply за каждый ход. Каждый ход цепочки должен трогать клетку, с которой сеть пока
+   * не согласна или которую не видно, — иначе ход ничем не подтверждён.
+   * Возвращает {best, second, none}: {san, moves, fen, cost, plies, bad} — лучшая цепочка,
+   * лучшая с другой итоговой позицией и «ходов не было»; bad — клетки, где сеть уверенно
+   * видит другое.
+   */
+  /**
+   * Насколько позиция chess согласна с нейросетью: сумма по видимым клеткам −ln P(содержимое)
+   * (не больше cap на клетку) и клетки, где сеть уверенно видит другое (bad).
+   */
+  function netCost(chess, probs, opts) {
+    opts = opts || {};
+    const CAP = opts.cap || 6, BAD = opts.bad || 2.3;
+    let cost = 0;
+    const bad = [];
+    for (const q of SQUARES) {
+      const p = probs(q);
+      if (!p) continue;
+      const x = chess.get(q), c = x ? (x.color === 'w' ? 1 : 2) : 0;
+      const v = Math.min(CAP, -Math.log(Math.max(1e-9, p[c])));
+      cost += v;
+      if (v > BAD) bad.push(q);
+    }
+    return { cost, bad };
+  }
+
+  function findByNet(chess, probs, opts) {
+    opts = opts || {};
+    const maxPlies = opts.maxPlies != null ? opts.maxPlies : 4;
+    const maxNodes = opts.maxNodes || 20000;
+    const CAP = opts.cap || 6, PLY = opts.ply != null ? opts.ply : 1, BAD = opts.bad || 2.3, SURE = opts.sure || 0.85;
+    const prefer = opts.prefer || [];
+    const timeOf = opts.timeOf || null;
+    // ограничение по времени: на телефоне поиск не должен останавливать обработку кадров
+    const now = typeof performance !== 'undefined' ? () => performance.now() : () => Date.now();
+    const deadline = opts.budgetMs ? now() + opts.budgetMs : Infinity;
+    let late = false;
+    const P = {};
+    for (const q of SQUARES) P[q] = probs(q);
+    const cls = x => (x ? (x.color === 'w' ? 1 : 2) : 0);
+    const sqCost = (q, c) => { const p = P[q]; return p ? Math.min(CAP, -Math.log(Math.max(1e-9, p[c]))) : 0; };
+    const content = {};
+    let cost0 = 0, floor = 0;
+    for (const q of SQUARES) {
+      content[q] = cls(chess.get(q)); cost0 += sqCost(q, content[q]);
+      floor += Math.min(sqCost(q, 0), sqCost(q, 1), sqCost(q, 2));
+    }
+    const work = chess; // ходим по самой позиции и откатываем назад
+    const seen = new Map(); // позиция → за сколько ходов уже были (другой порядок тех же ходов)
+    const res = [];
+    let nodes = 0;
+    const key3 = () => work.fen().split(' ').slice(0, 3).join(' ');
+    const record = (seq, cost) => {
+      const bad = SQUARES.filter(q => sqCost(q, content[q]) > BAD);
+      let pre = 0;
+      while (pre < seq.length && pre < prefer.length && seq[pre].san === prefer[pre]) pre++;
+      // occ — что видно сети (пусто/белая/чёрная): превращение в ферзя и в ладью для неё одинаковы
+      const occ = SQUARES.map(q => content[q]).join('');
+      const under = seq.filter(m => m.promotion && m.promotion !== 'q').length;
+      res.push({ san: seq.map(m => m.san), moves: seq.slice(), fen: work.fen(), key: key3(), occ, cost: cost + seq.length * PLY, plies: seq.length, bad, pre, under });
+    };
+    // Ход должен освобождать клетку, где сеть не видит уверенно фигуру этого цвета,
+    // и ставить фигуру туда, где сеть не видит уверенно пустоту (или клетку не видно).
+    const plausible = (m, color) => {
+      const pf = P[m.from], pt = P[m.to];
+      if (pf && pf[color] >= SURE) return false;
+      if (pt && pt[0] >= SURE) return false;
+      return true;
+    };
+    // Фигура может пройти через клетку (взяла и её тут же побили) — такой ход «неправдоподобен»
+    // по итоговой картине; разрешаем не больше slack таких ходов в цепочке.
+    const SLACK = opts.slack != null ? opts.slack : 1;
+    const evidence = (m, color) => {
+      const pf = P[m.from], pt = P[m.to];
+      return (pf ? 1 - pf[color] : 0.5) + (pt ? 1 - pt[0] : 0.5);
+    };
+    const dfs = (seq, cost, limit, slack) => {
+      if (seq.length === limit) { record(seq, cost); return; }
+      const color = work.turn() === 'w' ? 1 : 2;
+      const onPath = seq.every((m, i) => m.san === prefer[i]);
+      const want = onPath ? prefer[seq.length] : null;
+      // Порядок перебора: записанный ход; затем ходы на клетки, изменившиеся раньше (порядок ходов
+      // для сети неразличим — по итоговой картине видно только, что сделано, но не в каком порядке);
+      // затем — с более явными признаками.
+      const tm = m => { const v = timeOf ? timeOf(m.to) : null; return v == null ? Infinity : v; };
+      const list = work.moves({ verbose: true }).map(m => ({ m, ok: plausible(m, color), w: m.san === want, t: tm(m), e: evidence(m, color) }))
+        .filter(x => x.ok || slack > 0).sort((a, b) => (b.w - a.w) || (a.t - b.t) || (b.e - a.e));
+      for (const { m, ok } of list) {
+        if (++nodes > maxNodes) return;
+        if ((nodes & 15) === 0 && now() > deadline) { late = true; nodes = maxNodes + 1; return; }
+        const sqs = squaresOfMove(m);
+        work.move(m);
+        const old = sqs.map(q => content[q]);
+        let c = cost;
+        for (const q of sqs) { const n = cls(work.get(q)); c += sqCost(q, n) - sqCost(q, content[q]); content[q] = n; }
+        const k = key3() + '|' + (seq.length + 1);
+        if (!seen.has(k)) {
+          seen.set(k, true);
+          seq.push(m);
+          dfs(seq, c, limit, ok ? slack : slack - 1);
+          seq.pop();
+        }
+        sqs.forEach((q, i) => { content[q] = old[i]; });
+        work.undo();
+      }
+    };
+    const depth0 = work.history().length;
+    try {
+      record([], cost0);
+      // Углубляемся по одному ходу; если картина уже объяснена почти полностью — дальше не ищем.
+      for (let d = 1; d <= maxPlies && nodes < maxNodes; d++) {
+        const bestSoFar = Math.min.apply(null, res.map(r => r.cost));
+        if (bestSoFar - floor <= (d - 1) * PLY + 0.5) break;
+        seen.clear();
+        dfs([], cost0, d, SLACK);
+      }
+    } finally { while (work.history().length > depth0) work.undo(); }
+    // равные по цене: меньше ходов, совпадение с уже записанным, превращение в ферзя
+    res.sort((a, b) => (a.cost - b.cost) || (a.plies - b.plies) || (b.pre - a.pre) || (a.under - b.under));
+    const best = res[0];
+    const same = res.filter(r => r.key === best.key && r.plies === best.plies && Math.abs(r.cost - best.cost) < 1e-6);
+    // соперник — лучшая цепочка с другой видимой картиной (иначе сеть их не различит)
+    const second = res.find(r => r.occ !== best.occ) || null;
+    const none = res.find(r => r.plies === 0);
+    return { best, second, none, nodes, orders: same.length, floor, late };
+  }
+
   return {
     FILES, SQUARES, UNIT,
     computeHomography, applyH, orderQuad, isConvexQuad, cameraFromH,
     squareToCell, cellToSquare,
     samplePlan, sampleWithPlan, sampleBoard, averageFeatures, cellDiff, cellStats, diffOpts,
     cloneFeatures, copyCells, darkLevel, calibrateDark, brightLevel, calibrateBright,
-    detectStartPosition, squareChanges, squaresOfMove, uniqueMoves, occlusionMap, findMove, findFastMove, scoreMoves, scoreSquares, findSequence,
+    detectStartPosition, squareChanges, squaresOfMove, uniqueMoves, occlusionMap, findMove, findFastMove, scoreMoves, scoreSquares, findSequence, findByNet, netCost,
     MotionTracker,
   };
 }));
