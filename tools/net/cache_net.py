@@ -1,9 +1,11 @@
-"""Cache network reads for a game: python3 cache_net.py NAME SRC model.pt rps -> cache/NAME.npz (t, pr, mov)"""
+"""Cache network reads for a game: python3 cache_net.py NAME SRC model.pt rps [phase_s] -> cache/NAME.npz (t, pr, mov)
+phase_s shifts the sampling (e.g. 0.125 at 4 rps) to test other frame timings."""
 import sys, os, json, math, subprocess, numpy as np, torch, cv2
 import torch.nn.functional as F
 from netdef import Net, normalize
 from fitlib import dlt
 name, src, model, RPS = sys.argv[1], sys.argv[2], sys.argv[3], float(sys.argv[4])
+PHASE = float(sys.argv[5]) if len(sys.argv) > 5 else 0.0
 if src.endswith('.json'):
     meta = json.load(open(src)); VIDEO = src[:-5] + '.webm'
 else:
@@ -17,13 +19,13 @@ s = sorted(quad, key=lambda q: math.atan2(q[1] - cy, q[0] - cx)); st = min(range
 quad = [s[(st + i) % 4] for i in range(4)]
 M = dlt([(0, 0), (1, 0), (1, 1), (0, 1)], quad) @ np.array([[1 / 160, 0, -1 / 8], [0, 1 / 160, -1 / 8], [0, 0, 1]])
 FPS_DEC = RPS * 2
-p = subprocess.Popen(['ffmpeg', '-v', 'error', '-i', VIDEO, '-vf', f'fps={FPS_DEC}', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], stdout=subprocess.PIPE)
+p = subprocess.Popen(['ffmpeg', '-v', 'error'] + (['-ss', str(PHASE)] if PHASE else []) + ['-i', VIDEO, '-vf', f'fps={FPS_DEC}', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], stdout=subprocess.PIPE)
 T, PR, MV = [], [], []
 i = 0; prevg = None
 while True:
     raw = p.stdout.read(W * H * 3)
     if len(raw) < W * H * 3: break
-    t = i / FPS_DEC; i += 1
+    t = PHASE + i / FPS_DEC; i += 1
     f = np.frombuffer(raw, np.uint8).reshape(H, W, 3)
     w = cv2.warpPerspective(cv2.GaussianBlur(f, (0, 0), 0.7), M, (200, 200), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP)
     g = w.astype(np.float32).mean(2)

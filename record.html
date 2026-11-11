@@ -9,7 +9,7 @@
   <title>Запись партии камерой</title>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet"/>
-  <link rel="stylesheet" href="css/record.css?v=18"/>
+  <link rel="stylesheet" href="css/record.css?v=19"/>
 </head>
 <body>
 <div id="app">
@@ -83,6 +83,30 @@
       <small id="trainInfo" class="ai-info"></small>
     </details>
 
+    <details class="card train-card" id="bcCard">
+      <summary>📡 Трансляция на lichess</summary>
+      <p class="hint">Каждая доска — свой телефон. Ходы этой доски уходят в раунд трансляции на lichess прямо во время записи, зрители смотрят все доски на lichess.</p>
+      <ol class="hint">
+        <li>На lichess: «Трансляции» → «Новая трансляция», затем создайте раунд и скопируйте ссылку на него. Для каждого тура — новый раунд.</li>
+        <li>Создайте <a href="https://lichess.org/account/oauth/token/create?scopes[]=study:write&amp;description=live-chessboard" target="_blank" rel="noopener">токен lichess с правом study:write</a> (аккаунт — владелец трансляции или её участник с правом записи).</li>
+        <li>На каждом телефоне укажите номер доски — или настройте один телефон и разошлите остальным готовые ссылки (кнопка ниже).</li>
+      </ol>
+      <label class="field wide"><span>Ссылка на раунд lichess</span><input id="bcRound" placeholder="https://lichess.org/broadcast/…/…/xxxxxxxx" autocomplete="off" autocapitalize="off" spellcheck="false"/></label>
+      <div class="fields">
+        <label class="field"><span>Доска №</span><input id="bcBoard" placeholder="1" inputmode="numeric"/></label>
+        <label class="field"><span>Досок с этим токеном</span><input id="bcBoards" placeholder="1" inputmode="numeric"/></label>
+      </div>
+      <label class="field wide"><span>Токен lichess</span><input id="bcToken" type="password" placeholder="lip_…" autocomplete="off" autocapitalize="off" spellcheck="false"/></label>
+      <label class="toggle"><span>Транслировать партии с этого телефона</span><input id="bcOn" type="checkbox"/></label>
+      <small class="ai-info" id="bcRate"></small>
+      <div class="btn-row two">
+        <button id="bcCheck" class="btn">Проверить</button>
+        <button id="bcLinks" class="btn">🔗 Ссылки для всех досок</button>
+      </div>
+      <small id="bcInfo" class="ai-info"></small>
+      <textarea id="bcLinkList" class="pgn" readonly hidden></textarea>
+    </details>
+
     <div class="section-label">Мои партии</div>
     <div class="card" id="savedList"><p class="empty">Пока нет сохранённых партий.</p></div>
     <p class="hint" style="text-align:center">Версия приложения: <b id="appVersion"></b></p>
@@ -152,6 +176,7 @@
       <div class="turn">
         <span id="turnDot" class="dot white"></span><b id="turnText">Ход белых</b>
         <small id="moveCounter">ходов пока нет</small>
+        <small id="bcBadge" class="bc-badge" hidden></small>
       </div>
       <div id="board" class="board" aria-label="Цифровая доска"></div>
       <div id="promo" class="promo" hidden></div>
@@ -238,11 +263,12 @@
 <div id="toast" role="status"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js" crossorigin="anonymous"></script>
-<script src="js/board-vision.js?v=18"></script>
-<script src="js/board-detect.js?v=18"></script>
-<script src="js/square-ai.js?v=18"></script>
-<script src="js/board-net.js?v=18"></script>
-<script src="js/game-tracker.js?v=18"></script>
-<script src="js/record.js?v=18"></script>
+<script src="js/board-vision.js?v=19"></script>
+<script src="js/board-detect.js?v=19"></script>
+<script src="js/square-ai.js?v=19"></script>
+<script src="js/board-net.js?v=19"></script>
+<script src="js/game-tracker.js?v=19"></script>
+<script src="js/broadcast.js?v=19"></script>
+<script src="js/record.js?v=19"></script>
 </body>
 </html>

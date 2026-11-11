@@ -280,6 +280,20 @@
     return softmaxCells(f.subarray(cur, cur + C * P * P), C, S);
   };
 
+  /**
+   * Вероятности клетки в виде [пусто, белая, чёрная, рука] — для любой сети: 4 класса
+   * или 14 (пусто, 6 белых фигур, 6 чёрных, рука; тип фигуры пока не используем).
+   */
+  function probs4(p, cell, K) {
+    const c = cell * K;
+    if (K === 14) {
+      let w = 0, b = 0;
+      for (let j = 1; j <= 6; j++) { w += p[c + j]; b += p[c + 6 + j]; }
+      return [p[c], w, b, p[c + 13]];
+    }
+    return [p[c], p[c + 1], p[c + 2], K > 3 ? p[c + 3] : 0];
+  }
+
   /** Снимок кадра → вероятности по клеткам. */
   Net.prototype.run = function (img, H) {
     this._x = this.rectify(img, H, this._x);
@@ -359,15 +373,15 @@
         let best = null;
         if (tr && e.data.gen === gen && e.data.t != null) {
           const K = net.classes, mv = e.data.moving;
-          const b = tr.read(e.data.t / 1000, i => { const c = sqCell[i] * K; return [p[c], p[c + 1], p[c + 2], K > 3 ? p[c + 3] : 0]; }, i => !!mv[i]);
+          const b = tr.read(e.data.t / 1000, i => probs4(p, sqCell[i], K), i => !!mv[i]);
           best = b ? b.moves.map(m => ({ from: m.from, to: m.to, promotion: m.promotion })) : null;
         }
-        self.postMessage({ p: p.buffer, best, gen: e.data.gen, ms: { net: t1 - t0, track: Date.now() - t1 } }, [p.buffer]);
+        self.postMessage({ p: p.buffer, best, gen: e.data.gen, ms: { net: t1 - t0, track: Date.now() - t1 }, wasm: !!net.wasm }, [p.buffer]);
       } catch (err) {
         self.postMessage({ error: String(err && err.message || err) });
       }
     };
   }
 
-  return { Net, Background, load, parse, EMPTY, WHITE, BLACK, HAND };
+  return { Net, Background, load, parse, probs4, EMPTY, WHITE, BLACK, HAND };
 }));
