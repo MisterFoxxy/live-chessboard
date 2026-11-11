@@ -9,6 +9,7 @@
   const AI = window.SquareAI;
   const BD = window.BoardDetect;
   const BN = window.BoardNet;
+  const GT = window.GameTracker;
   if (typeof Chess === 'undefined' || !BV || !AI || !BD) {
     document.body.innerHTML = '<p style="padding:24px;color:#fff">Не удалось загрузить скрипты. Проверьте интернет и обновите страницу.</p>';
     return;
@@ -16,7 +17,7 @@
 
   /* ---------- Константы и утилиты ---------- */
 
-  const APP_VERSION = '15 · лёгкая сеть, доска lichess';
+  const APP_VERSION = '16 · ведение партии гипотезами';
   const TICK_MS = 33;      // ~30 кадров/с
   const SETTLE_MS = 600;   // полная проверка, когда вся доска неподвижна
   const PROC_W = 640;
@@ -108,11 +109,12 @@
   const moveLog = [];
   const quietLog = []; // решения проверки в паузах (для отладочного журнала)
   const netLog = [];   // решения нейросети (для отладочного журнала)
+  const perfLog = [];  // скорость проверок: [время видео, мс сети, мс трекера, мс до ответа]
   // Нейросеть, обученная на записях настоящих партий: что стоит на каждой клетке.
   let boardNet = null, netBg = null;
-  window.vcNetReady = BN ? BN.load('models/board-net.bnet?v=15').then(n => {
+  window.vcNetReady = BN ? BN.load((/[?&]net=light/.test(location.search) ? 'models/board-net-light.bnet' : 'models/board-net.bnet') + '?v=16').then(n => {
     boardNet = n;
-    try { if (typeof Worker === 'function') netBg = new BN.Background('js/board-net.js?v=15', n); } catch (e) { netBg = null; }
+    try { if (typeof Worker === 'function') netBg = new BN.Background('js/board-net.js?v=16', n); } catch (e) { netBg = null; }
     return true;
   }).catch(e => { console.warn(e); return false; }) : Promise.resolve(false);
 
@@ -418,6 +420,8 @@
           S.lastRecogAt = now;
           recognize(tracker.isSteady() ? tracker.steadyFeatures() : feat);
         }
+      } else if (trackerOn()) {
+        trackerTick(tracker.now);
       } else if (!S.ref) {
         if (tracker.isSteady()) setBase(tracker.steadyFeatures());
         else netBootstrap(feat);
@@ -997,14 +1001,17 @@
       if (due && !netBg.busy) {
         const req = { t, mask: new Set(mask), plies: S.chess.history().length, at: performance.now() };
         S.netAt = t;
-        netBg.run(S.lastImg, S.H, p => { if (p) { req.probs = p; req.ms = Math.round(performance.now() - req.at); S.netRes = req; } });
+        const fr = netFrame();
+        if (fr) netBg.run(fr.img, fr.H, p => { if (p) { req.probs = p; req.ms = Math.round(performance.now() - req.at); S.netRes = req; } });
       }
       return null;
     }
     if (!due) return null;
     S.netStale = false;
     const t0 = performance.now();
-    const probs = boardNet.run(S.lastImg, S.H);
+    const fr = netFrame();
+    if (!fr) return null;
+    const probs = boardNet.run(fr.img, fr.H);
     S.netP = probs;
     S.netAt = S.netPAt = t;
     return netDecide(probs, t, mask, ch, Math.round(performance.now() - t0));
@@ -1103,6 +1110,134 @@
     return 'fixed';
   }
 
+  /*
+   * Кадр для сети — уменьшенный до 320 пикселей по ширине (уменьшает видеокарта, почти даром):
+   * сети нужно 16 пикселей на клетку, а копировать в фоновый поток и выпрямлять в 4 раза меньше.
+   */
+  const NET_W = 320;
+  const netCanvas = document.createElement('canvas');
+  const netCtx = netCanvas.getContext('2d', { willReadFrequently: true });
+  function netFrame() {
+    if (!video.videoWidth || !S.H || !proc.width) return null;
+    const s = Math.min(1, NET_W / proc.width);
+    const w = Math.round(proc.width * s), h = Math.round(proc.height * s);
+    if (netCanvas.width !== w || netCanvas.height !== h) { netCanvas.width = w; netCanvas.height = h; }
+    netCtx.drawImage(video, 0, 0, w, h);
+    let img;
+    try { img = netCtx.getImageData(0, 0, w, h); } catch (e) { return null; }
+    const H = S.H.slice();
+    for (let i = 0; i < 6; i++) H[i] *= s; // гомография «доска → пиксели» для уменьшенного кадра
+    return { img, H };
+  }
+
+  /*
+   * Основной режим при съёмке сверху: партию ведёт GameTracker по ответам нейросети.
+   * Сеть смотрит на доску непрерывно (READ_MS), трекер держит гипотезы о сыгранных ходах,
+   * запись = лучшая гипотеза. Старая логика (сравнение с эталоном) работает, если сети нет
+   * или камера сбоку.
+   */
+  const READ_MS = 250;     // проверка сетью 4 раза в секунду
+  const MOVE_MS = 150;     // клетка «в движении», если движение было за последние 150 мс
+  let gtr = null;
+  function trackerOn() {
+    return !!(boardNet && GT && settings.ai && !window.vcNoTracker && S.cam && S.cam.tilt < QUIET_MAX_TILT);
+  }
+  function trackerReset() { gtr = null; S.gtRes = null; S.gtNeedReset = true; }
+  function sqCellMap() { return GT.SQUARES.map(q => BV.squareToCell(q, S.k)); }
+  function chessUrl() { const el = document.querySelector('script[src*="chess"]'); return el ? el.src : 'https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js'; }
+  function movingNow(t) {
+    const m = new Uint8Array(64);
+    for (let i = 0; i < 64; i++) m[i] = t - tracker.since[BV.squareToCell(GT.SQUARES[i], S.k)] < MOVE_MS ? 1 : 0;
+    return m;
+  }
+  function trackerTick(t) {
+    // Телефон: сеть и трекер в фоновом потоке, основной поток только отдаёт кадр и сверяет запись.
+    if (netBg && !netBg.failed && !netBg.trackFailed && !S.manual) {
+      if (!netBg.tracking) netBg.trackInit([chessUrl(), new URL('js/game-tracker.js?v=16', location.href).href]);
+      if (S.gtGen == null || S.gtNeedReset) {
+        S.gtGen = (S.gtGen || 0) + 1; S.gtNeedReset = false; S.gtRes = null;
+        S.gtBase = S.chess.history().length; S.gtAt = -1e9;
+        netBg.trackReset(S.chess.fen(), sqCellMap(), S.gtGen);
+      }
+      if (S.gtRes) {
+        const R = S.gtRes; S.gtRes = null;
+        S.netP = R.probs; S.netPAt = R.t;
+        if (R.best) syncRecord(R.best, R.ms ? R.ms.net : null, R.ms ? R.ms.track : null);
+      }
+      if (t - S.gtAt >= READ_MS && !netBg.busy) {
+        const fr = netFrame();
+        if (!fr) return;
+        S.gtAt = t;
+        const gen = S.gtGen;
+        const at = performance.now(), vt = Math.round(video.currentTime * 100) / 100;
+        netBg.runTracked(fr.img, fr.H, t, movingNow(t), gen, (p, best, g, ms) => {
+          perfLog.push([vt, ms ? ms.net : null, ms ? ms.track : null, Math.round(performance.now() - at)]);
+          if (perfLog.length > 600) perfLog.shift();
+          if (p && g === S.gtGen) S.gtRes = { t, probs: p, best, ms };
+        });
+      }
+      return;
+    }
+    if (!gtr) {
+      gtr = new GT.Tracker(Chess);
+      gtr.reset(S.chess.fen());
+      S.gtBase = S.chess.history().length;
+      S.gtAt = -1e9;
+    }
+    const due = t - S.gtAt >= READ_MS;
+    if (netBg && !netBg.failed && !S.manual) {
+      // ответ фонового потока по кадру, снятому чуть раньше: трекер учитывает время кадра
+      if (S.gtRes) { const R = S.gtRes; S.gtRes = null; trackerApply(R.t, R.probs, R.moving, R.ms); }
+      if (due && !netBg.busy) {
+        const fr = netFrame();
+        if (!fr) return;
+        const req = { t, moving: movingNow(t), at: performance.now() };
+        S.gtAt = t;
+        const g = gtr;
+        netBg.run(fr.img, fr.H, p => { if (p && g === gtr) { req.probs = p; req.ms = Math.round(performance.now() - req.at); S.gtRes = req; } });
+      }
+      return;
+    }
+    if (!due) return;
+    const fr = netFrame();
+    if (!fr) return;
+    S.gtAt = t;
+    const t0 = performance.now();
+    const probs = boardNet.run(fr.img, fr.H);
+    trackerApply(t, probs, movingNow(t), Math.round(performance.now() - t0));
+  }
+  function trackerApply(t, probs, moving, ms) {
+    S.netP = probs;
+    S.netPAt = t;
+    const K = boardNet.classes;
+    const t0 = performance.now();
+    const best = gtr.read(t / 1000, i => {
+      const c = BV.squareToCell(GT.SQUARES[i], S.k) * K;
+      return [probs[c], probs[c + 1], probs[c + 2], K > 3 ? probs[c + 3] : 0];
+    }, i => !!moving[i]);
+    const searchMs = Math.round(performance.now() - t0);
+    if (!best) return;
+    syncRecord(best.moves.map(m => m.san), ms, searchMs);
+  }
+
+  /** Запись = начало партии до трекера + ходы лучшей гипотезы. */
+  function syncRecord(want, ms, searchMs) {
+    const hist = S.chess.history().slice(S.gtBase);
+    let k = 0;
+    while (k < hist.length && k < want.length && hist[k] === want[k]) k++;
+    if (k === hist.length && k === want.length) return;
+    netLog.push({ t: Math.round(video.currentTime * 100) / 100, rec: hist.slice(k).join(' '), best: want.slice(k).join(' '), ms, search: searchMs, act: 'track' });
+    if (netLog.length > 400) netLog.shift();
+    if (window.vcNetTrace) window.vcNetTrace.push(netLog[netLog.length - 1]);
+    undoPlies(hist.length - k);
+    for (const san of want.slice(k)) if (!applyMove(san, 'net')) break;
+    if (hist.length > k) {
+      const h2 = S.chess.history({ verbose: true }), last = h2[h2.length - 1];
+      S.lastMove = last ? [last.from, last.to] : [];
+      renderBoard(); renderMoves(); autosave();
+    }
+  }
+
   /** Вероятности сети по клетке: [пусто, белая, чёрная, рука]. */
   function netProbs(sq, probs) {
     const K = boardNet.classes, c = BV.squareToCell(sq, S.k) * K, p = probs || S.netP;
@@ -1119,8 +1254,10 @@
     if (!(S.cam && S.cam.tilt < QUIET_MAX_TILT)) return;
     const t = tracker.now;
     if (t - S.netAt < NET_RETRY_MS) return;
+    const fr = netFrame();
+    if (!fr) return;
     S.netAt = S.netPAt = t;
-    S.netP = boardNet.run(S.lastImg, S.H);
+    S.netP = boardNet.run(fr.img, fr.H);
     const hidden = new Set();
     for (let c = 0; c < 64; c++) {
       if (t - tracker.since[c] >= QUIET_MS) continue;
@@ -1379,7 +1516,7 @@
     S.lastMove = [played.from, played.to];
     logMove(played.san, source);
     S.selected = null;
-    if (source === 'manual') { S.ref = null; S.netPly = S.chess.history().length; } // эталон снимем заново, когда доска успокоится
+    if (source === 'manual') { S.ref = null; S.netPly = S.chess.history().length; trackerReset(); } // эталон снимем заново, когда доска успокоится
     feedback();
     renderBoard();
     renderMoves();
@@ -1393,6 +1530,7 @@
     if (!m) { toast('Отменять нечего'); return; }
     S.times.pop();
     S.netPly = S.chess.history().length;
+    trackerReset();
     const hist = S.chess.history({ verbose: true });
     const last = hist[hist.length - 1];
     S.lastMove = last ? [last.from, last.to] : [];
@@ -1819,6 +1957,7 @@
     S.netRes = null;
     S.netPly = null;
     S.netCand = null;
+    trackerReset();
     S.netAt = -1e9;
     S.netOpen = false;
     S.netLostSince = 0;
@@ -1949,7 +2088,7 @@
       video: { width: video.videoWidth || null, height: video.videoHeight || null, recordStartT: S.debug ? S.debug.videoT0 : null, type: S.debug ? S.debug.type : null },
       version: APP_VERSION, corners: S.corners, k: S.k, settings, headers: S.headers,
       camera: S.cam ? { tilt: Math.round(S.cam.tilt * 10) / 10, diff: BV.diffOpts.mode } : null,
-      moves: moveLog, settles: debugLog, quiet: quietLog, net: netLog, history: S.chess.history(), pgn: $('#pgnOut').value,
+      moves: moveLog, settles: debugLog, quiet: quietLog, net: netLog, perf: perfLog, history: S.chess.history(), pgn: $('#pgnOut').value,
     }, null, 1);
   }
 
@@ -2439,6 +2578,7 @@
     /** Покадровая проверка (для повторяемых тестов): свой таймер выключается, кадр — по вызову. */
     manual() { S.manual = true; clearInterval(S.timer); },
     netLog,
+    perfLog,
     async step(t) {
       video.pause();
       if (Math.abs(video.currentTime - t) > 1e-4) {
@@ -2461,6 +2601,7 @@
       S.chess = c;
       S.times = [];
       S.lastMove = [];
+      trackerReset();
       S.k = k & 3;
       S.kManual = true;
       S.autoDetect = false;
