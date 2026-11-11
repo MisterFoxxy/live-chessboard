@@ -17,7 +17,7 @@
 
   /* ---------- Константы и утилиты ---------- */
 
-  const APP_VERSION = '19 · 4 проверки в секунду, трансляция на lichess';
+  const APP_VERSION = '19.1 · ровно 4 проверки в секунду';
   const TICK_MS = 33;      // ~30 кадров/с
   const SETTLE_MS = 600;   // полная проверка, когда вся доска неподвижна
   const PROC_W = 640;
@@ -112,13 +112,13 @@
   const perfLog = [];  // скорость проверок: [время видео, мс сети, мс трекера, мс до ответа]
   // Нейросеть, обученная на записях настоящих партий: что стоит на каждой клетке.
   let boardNet = null, netBg = null, netBgs = [];
-  window.vcNetReady = BN ? BN.load((/[?&]net=light/.test(location.search) ? 'models/board-net-light.bnet' : 'models/board-net.bnet') + '?v=19').then(n => {
+  window.vcNetReady = BN ? BN.load((/[?&]net=light/.test(location.search) ? 'models/board-net-light.bnet' : 'models/board-net.bnet') + '?v=19.1').then(n => {
     boardNet = n;
     try {
       if (typeof Worker === 'function') {
         // две копии сети в двух фоновых потоках: кадры обрабатываются по очереди, проверок вдвое больше
         const nw = Math.max(1, Math.min(2, (navigator.hardwareConcurrency || 2) - 1));
-        for (let i = 0; i < nw; i++) netBgs.push(new BN.Background('js/board-net.js?v=19', n));
+        for (let i = 0; i < nw; i++) netBgs.push(new BN.Background('js/board-net.js?v=19.1', n));
         netBg = netBgs[0];
       }
     } catch (e) { netBg = null; netBgs = []; }
@@ -1246,7 +1246,9 @@
         if (bg) {
           const fr = netFrame();
           if (!fr) return;
-          S.gtAt = t;
+          // расписание по сетке 250 мс, а не от момента запуска: шаг цикла на телефоне ~50 мс,
+          // и «от запуска» выходило 0,30 с между проверками вместо 0,25
+          S.gtAt = Math.max(S.gtAt + READ_MS, t - READ_MS / 2);
           const req = { t, moving: movingNow(t), at: performance.now(), done: false, probs: null, gen: S.gtGen };
           const vt = Math.round(video.currentTime * 100) / 100;
           q.push(req);

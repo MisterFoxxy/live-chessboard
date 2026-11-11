@@ -9,7 +9,8 @@ const TEST = process.env.TEST || 'test';
 const ref = g => {
   const f = path.join(TEST, g + 's.json');
   if (fs.existsSync(f)) return JSON.parse(fs.readFileSync(f)).expected;
-  return fs.readFileSync({ u9: 'g9_beam.txt' }[g]).toString().trim().split(/\s+/);
+  const n = g.slice(1), f2 = ['g' + n + '_ref.txt', 'g' + n + '_beam.txt'].find(x => fs.existsSync(x));
+  return fs.readFileSync(f2).toString().trim().split(/\s+/);
 };
 const lev = (a, b) => {
   const d = Array.from({ length: a.length + 1 }, (_, i) => [i]);
