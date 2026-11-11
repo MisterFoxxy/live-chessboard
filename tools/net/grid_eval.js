@@ -3,7 +3,12 @@ const { Chess } = require('chess.js');
 const GT = require(process.env.GTJS || '../../js/game-tracker.js');
 const fs = require('fs'), path = require('path');
 const TEST = process.env.TEST || 'test';
-const ref = g => { const f = path.join(TEST, g + 's.json'); return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f)).expected : fs.readFileSync('g9_beam.txt').toString().trim().split(/\s+/); };
+const ref = g => {
+  const f = path.join(TEST, g + 's.json');
+  if (fs.existsSync(f)) return JSON.parse(fs.readFileSync(f)).expected;
+  const n = g.slice(1), f2 = ['g' + n + '_ref.txt', 'g' + n + '_beam.txt'].find(x => fs.existsSync(x)); // эталон партии из отчёта
+  return fs.readFileSync(f2).toString().trim().split(/\s+/);
+};
 const lev = (a, b) => { const d = Array.from({ length: a.length + 1 }, (_, i) => [i]); for (let j = 1; j <= b.length; j++) d[0][j] = j;
   for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); return d[a.length][b.length]; };
 const games = (process.env.GAMES || 'u1 u2 u4 u5 u6 u7 u8 u9').split(' '), phases = (process.env.PHASES || ',_p1,_p2,_p3').split(',');
