@@ -24,7 +24,7 @@ while i < len(mods):
     elif isinstance(m, nn.MaxPool2d):
         layers.append({'type': 'pool'})
     i += 1
-meta = json.dumps({'input': 160, 'square': 16, 'margin': 16, 'classes': ['empty', 'white', 'black', 'hand'][:layers[-1]['out']], 'layers': layers}).encode()
+meta = json.dumps({'input': 160, 'square': 16, 'margin': 16, 'classes': (['empty', 'P', 'N', 'B', 'R', 'Q', 'K', 'p', 'n', 'b', 'r', 'q', 'k', 'hand'] if layers[-1]['out'] == 14 else ['empty', 'white', 'black', 'hand'][:layers[-1]['out']]), 'layers': layers}).encode()
 data = np.concatenate(blobs).astype('<f4').tobytes()
 with open(dst, 'wb') as f:
     f.write(b'BNET'); f.write(struct.pack('<I', len(meta))); f.write(meta)

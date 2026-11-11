@@ -238,6 +238,10 @@ button { cursor: pointer; }
 .turn { text-align: center; margin: 6px 0 10px; }
 .turn b { font-size: 17px; }
 .turn small { display: block; color: var(--muted); }
+.turn .bc-badge { font-size: 12px; margin-top: 2px; }
+.hint a { color: var(--accent); }
+.turn .bc-badge.ok { color: var(--green); }
+.turn .bc-badge.bad { color: var(--red); }
 .turn .dot {
   display: inline-block; width: 14px; height: 14px; border-radius: 50%;
   border: 2px solid var(--text); margin-right: 6px; vertical-align: -1px;

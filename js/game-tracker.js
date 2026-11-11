@@ -29,16 +29,18 @@
 
   const DEFAULTS = {
     cap: 4,        // штраф клетки не больше
-    pen: 2,        // штраф за ход
+    pen: 4,        // штраф за ход
     beam: 24,      // сколько гипотез держать
     div: 4,        // сколько гипотез с одинаковым числом ходов держать в любом случае
-    conf: 0.55,    // уверенный ответ сети по клетке
+    conf: 0.7,     // уверенный ответ сети по клетке
     hand: 0.5,     // клетка закрыта рукой
     recent: 4,     // «свежее» изменение клетки, с
     d3: 2,         // скольким лучшим гипотезам можно продлиться сразу на 3 хода
     minVisible: 24,
     budget: 0,     // мс на одну проверку (0 — без предела); лучшие гипотезы перебираются первыми
     startBad: 2,   // старт: сколько клеток может не сходиться с начальной позицией
+    rate: 0,       // вес проверки = прошедшее время / rate с (0 — каждая проверка весит 1): не зависит от скорости телефона
+    hid: 0.9,      // ход с клетки под рукой: на клетке «куда» уверенно (не меньше hid) и недавно появилась фигура ходящего (0 — выкл.)
   };
 
   function Tracker(ChessCtor, opts) {
@@ -55,6 +57,7 @@
     this.obsCls = new Int8Array(64).fill(-1);
     this.obsSince = new Float64Array(64);
     this.reads = 0;
+    this.lastT = null;
   };
 
   /* ---------- Свой быстрый генератор ходов ----------
@@ -224,7 +227,9 @@
       return null;
     }
     this.reads++;
-    const obs = cls => { let s = 0; for (let i = 0; i < 64; i++) if (vis[i]) s += cost[i * 3 + cls[i]]; return s; };
+    const w = o.rate && this.lastT != null ? Math.max(0.25, Math.min(2, (t - this.lastT) / o.rate)) : 1;
+    this.lastT = t;
+    const obs = cls => { let s = 0; for (let i = 0; i < 64; i++) if (vis[i]) s += cost[i * 3 + cls[i]]; return s * w; };
     const changedSet = cls => { const out = new Set(); for (let i = 0; i < 64; i++) if (conf[i] >= 0 && conf[i] !== cls[i]) out.add(i); return out; };
     const ok = mv => {
       if (!vis[mv.from]) return false;
@@ -245,12 +250,22 @@
       const prev = cand.get(node.key);
       if (!prev || prev.acc > acc) cand.set(node.key, { node, moves: newm.length ? h.moves.concat(newm.map(mv => ({ from: SQ[mv.from], to: SQ[mv.to], promotion: mv.m.promo ? 'q' : undefined, t }))) : h.moves, acc });
     };
+    // клетка «откуда» под рукой: ход виден только по клетке «куда» (фигуру уже поставили, руку ещё не убрали)
+    const okHid = mv => vis[mv.to] && conf[mv.to] === mv.color && prob[mv.to * 3 + mv.color] >= o.hid &&
+      this.obsCls[mv.to] === mv.color && t - this.obsSince[mv.to] <= o.recent;
     const expand = (n, ch) => {
       const out = [];
       for (const sq of fromSquares(n)) for (const mv of this.movesFrom(n, sq)) {
         if (!ch.has(mv.from) && !ch.has(mv.to)) continue;
         if (!ok(mv)) continue;
         out.push(mv);
+      }
+      if (o.hid) {
+        const col = n.pos.turn === 0 ? 1 : 2, cls = n.cls;
+        for (let i = 0; i < 64; i++) {
+          if (cls[i] !== col || vis[i]) continue;
+          for (const mv of this.movesFrom(n, i)) if (ch.has(mv.to) && okHid(mv)) out.push(mv);
+        }
       }
       return out;
     };

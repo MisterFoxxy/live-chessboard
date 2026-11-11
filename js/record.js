@@ -17,7 +17,7 @@
 
   /* ---------- Константы и утилиты ---------- */
 
-  const APP_VERSION = '18 · показ исправлений';
+  const APP_VERSION = '19 · 4 проверки в секунду, трансляция на lichess';
   const TICK_MS = 33;      // ~30 кадров/с
   const SETTLE_MS = 600;   // полная проверка, когда вся доска неподвижна
   const PROC_W = 640;
@@ -111,10 +111,17 @@
   const netLog = [];   // решения нейросети (для отладочного журнала)
   const perfLog = [];  // скорость проверок: [время видео, мс сети, мс трекера, мс до ответа]
   // Нейросеть, обученная на записях настоящих партий: что стоит на каждой клетке.
-  let boardNet = null, netBg = null;
-  window.vcNetReady = BN ? BN.load((/[?&]net=light/.test(location.search) ? 'models/board-net-light.bnet' : 'models/board-net.bnet') + '?v=18').then(n => {
+  let boardNet = null, netBg = null, netBgs = [];
+  window.vcNetReady = BN ? BN.load((/[?&]net=light/.test(location.search) ? 'models/board-net-light.bnet' : 'models/board-net.bnet') + '?v=19').then(n => {
     boardNet = n;
-    try { if (typeof Worker === 'function') netBg = new BN.Background('js/board-net.js?v=18', n); } catch (e) { netBg = null; }
+    try {
+      if (typeof Worker === 'function') {
+        // две копии сети в двух фоновых потоках: кадры обрабатываются по очереди, проверок вдвое больше
+        const nw = Math.max(1, Math.min(2, (navigator.hardwareConcurrency || 2) - 1));
+        for (let i = 0; i < nw; i++) netBgs.push(new BN.Background('js/board-net.js?v=19', n));
+        netBg = netBgs[0];
+      }
+    } catch (e) { netBg = null; netBgs = []; }
     return true;
   }).catch(e => { console.warn(e); return false; }) : Promise.resolve(false);
 
@@ -247,6 +254,72 @@
       headers: S.headers, moves: S.chess.history(), times: S.times,
       startedAt: S.startedAt, savedAt: Date.now(),
     });
+    bcUpdate('*');
+  }
+
+  /* ---------- Трансляция на lichess (js/broadcast.js) ---------- */
+  const LB = window.LiveBroadcast;
+  const bcConf = () => Object.assign({ round: '', board: '', boards: '', on: false }, store.get('vc_bc', {}));
+  const bcToken = () => store.get('vc_bc_token', '');
+  let bcPusher = null, bcKey = '', bcLast = null;
+
+  /** Партия ушла на lichess? Создаём отправщика при первом ходе и после смены настроек. */
+  function bcUpdate(result, final) {
+    const c = bcConf(), round = LB && LB.roundId(c.round), token = bcToken();
+    if (!c.on || !round || !token || !S.chess.history().length) { bcBadge(); return; }
+    const key = [round, token, c.board, c.boards].join('|');
+    if (!bcPusher || bcKey !== key) {
+      if (bcPusher) bcPusher.stop();
+      bcKey = key;
+      bcPusher = new LB.Pusher({ round, token, interval: LB.minInterval(c.boards), onStatus: st => { bcLast = st; bcBadge(); } });
+    }
+    if (!S.startedAt) S.startedAt = Date.now();
+    const t = LB.tags(S.headers || {}, c.board, S.startedAt.toString(36));
+    bcPusher.update(buildPgn(result, t));
+    if (final) bcPusher.flush();
+    bcBadge();
+  }
+
+  function bcBadge() {
+    const el = $('#bcBadge');
+    if (!el) return;
+    const c = bcConf();
+    el.hidden = !(c.on && bcPusher);
+    if (el.hidden) return;
+    const st = bcLast || { state: 'wait', text: 'жду первого хода' };
+    const n = st.plies != null ? ' · ' + st.plies + ' пол.' : '';
+    el.textContent = '📡 lichess, доска ' + (Math.floor(+c.board) || 1) + ': ' + st.text + (st.state === 'ok' ? n : '');
+    el.classList.toggle('ok', st.state === 'ok');
+    el.classList.toggle('bad', st.state === 'error' || st.state === 'denied');
+  }
+
+  /**
+   * Ссылка record.html#bc=ID_РАУНДА&board=N&boards=M&lt=ТОКЕН настраивает трансляцию на телефоне доски N
+   * и сразу убирает токен из адресной строки.
+   */
+  function bcFromLink() {
+    const h = location.hash.replace(/^#/, '');
+    if (!/(^|&)bc=/.test(h)) return;
+    const p = new URLSearchParams(h);
+    const round = LB && LB.roundId(p.get('bc') || '');
+    if (round) {
+      store.set('vc_bc', Object.assign(bcConf(), { round, board: p.get('board') || '', boards: p.get('boards') || '', on: true }));
+      const tok = (p.get('lt') || '').trim();
+      if (tok) store.set('vc_bc_token', tok);
+      keepStorage();
+      setTimeout(() => toast('Трансляция настроена: доска ' + (p.get('board') || '1')), 300);
+    }
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* ignore */ }
+  }
+
+  function bcLinks() {
+    const c = bcConf(), round = LB.roundId(c.round), n = Math.max(1, Math.floor(+c.boards) || 1);
+    const base = location.origin + location.pathname;
+    const out = [];
+    for (let i = 1; i <= n; i++) {
+      out.push('Доска ' + i + ': ' + base + '#bc=' + round + '&board=' + i + '&boards=' + n + '&lt=' + encodeURIComponent(bcToken()));
+    }
+    return out.join('\n');
   }
 
   /* ---------- Камера / видео ---------- */
@@ -1136,13 +1209,13 @@
    * запись = лучшая гипотеза. Старая логика (сравнение с эталоном) работает, если сети нет
    * или камера сбоку.
    */
-  const READ_MS = 250;     // проверка сетью 4 раза в секунду
+  const READ_MS = 250;     // проверка сетью 4 раза в секунду (две копии сети в фоне — успевают и телефоны)
   const MOVE_MS = 150;     // клетка «в движении», если движение было за последние 150 мс
   let gtr = null;
   function trackerOn() {
     return !!(boardNet && GT && settings.ai && !window.vcNoTracker && S.cam && S.cam.tilt < QUIET_MAX_TILT);
   }
-  function trackerReset() { gtr = null; S.gtRes = null; S.gtNeedReset = true; }
+  function trackerReset() { gtr = null; S.gtRes = null; S.gtNeedReset = true; S.gtQueue = []; }
   function sqCellMap() { return GT.SQUARES.map(q => BV.squareToCell(q, S.k)); }
   function movingNow(t) {
     const m = new Uint8Array(64);
@@ -1150,54 +1223,54 @@
     return m;
   }
   function trackerTick(t) {
-    // Телефон: сеть и трекер в фоновом потоке, основной поток только отдаёт кадр и сверяет запись.
-    if (netBg && !netBg.failed && !netBg.trackFailed && !S.manual) {
-      if (!netBg.tracking) netBg.trackInit([new URL('js/game-tracker.js?v=18', location.href).href]);
-      if (S.gtGen == null || S.gtNeedReset) {
-        S.gtGen = (S.gtGen || 0) + 1; S.gtNeedReset = false; S.gtRes = null;
-        S.gtBase = S.chess.history().length; S.gtAt = -1e9;
-        netBg.trackReset(S.chess.fen(), sqCellMap(), S.gtGen);
+    // Телефон: сеть считают фоновые потоки (по очереди), перебор гипотез — здесь, ответы строго по порядку кадров.
+    if (netBgs.length && !S.manual && netBgs.some(b => !b.failed)) {
+      if (!gtr || S.gtNeedReset) {
+        gtr = new GT.Tracker(null, window.vcTrackerOpts);
+        gtr.reset(S.chess.fen());
+        S.gtBase = S.chess.history().length;
+        S.gtAt = -1e9; S.gtQueue = []; S.gtNeedReset = false;
+        S.gtGen = (S.gtGen || 0) + 1;
       }
-      if (S.gtRes) {
-        const R = S.gtRes; S.gtRes = null;
-        S.netP = R.probs; S.netPAt = R.t;
-        if (R.best) syncRecord(R.best, R.ms ? R.ms.net : null, R.ms ? R.ms.track : null);
+      const q = S.gtQueue;
+      // ответ, которого нет дольше 3 с (поток завис), пропускаем, чтобы не держать очередь
+      while (q.length && (q[0].done || performance.now() - q[0].at > 3000)) {
+        const R = q.shift();
+        if (!R.probs) continue;
+        const a = performance.now();
+        trackerApply(R.t, R.probs, R.moving, R.ms);
+        if (R.perf) R.perf[2] = Math.round(performance.now() - a);
       }
-      if (t - S.gtAt >= READ_MS && !netBg.busy) {
-        const fr = netFrame();
-        if (!fr) return;
-        S.gtAt = t;
-        const gen = S.gtGen;
-        const at = performance.now(), vt = Math.round(video.currentTime * 100) / 100;
-        netBg.runTracked(fr.img, fr.H, t, movingNow(t), gen, (p, best, g, ms) => {
-          perfLog.push([vt, ms ? ms.net : null, ms ? ms.track : null, Math.round(performance.now() - at)]);
-          if (perfLog.length > 600) perfLog.shift();
-          if (p && g === S.gtGen) S.gtRes = { t, probs: p, best, ms };
-        });
+      if (t - S.gtAt >= READ_MS) {
+        const bg = netBgs.find(b => !b.busy && !b.failed);
+        if (bg) {
+          const fr = netFrame();
+          if (!fr) return;
+          S.gtAt = t;
+          const req = { t, moving: movingNow(t), at: performance.now(), done: false, probs: null, gen: S.gtGen };
+          const vt = Math.round(video.currentTime * 100) / 100;
+          q.push(req);
+          bg.run(fr.img, fr.H, (p, err, d) => {
+            req.ms = Math.round(performance.now() - req.at);
+            req.perf = [vt, d && d.ms ? d.ms.net : null, null, req.ms];
+            if (d && d.wasm != null) S.netWasm = d.wasm;
+            perfLog.push(req.perf);
+            if (perfLog.length > 600) perfLog.shift();
+            req.probs = p && req.gen === S.gtGen ? p : null;
+            req.done = true;
+          });
+        }
       }
       return;
     }
     if (!gtr) {
-      gtr = new GT.Tracker(Chess);
+      gtr = new GT.Tracker(Chess, window.vcTrackerOpts);
       gtr.reset(S.chess.fen());
       S.gtBase = S.chess.history().length;
       S.gtAt = -1e9;
     }
-    const due = t - S.gtAt >= READ_MS;
-    if (netBg && !netBg.failed && !S.manual) {
-      // ответ фонового потока по кадру, снятому чуть раньше: трекер учитывает время кадра
-      if (S.gtRes) { const R = S.gtRes; S.gtRes = null; trackerApply(R.t, R.probs, R.moving, R.ms); }
-      if (due && !netBg.busy) {
-        const fr = netFrame();
-        if (!fr) return;
-        const req = { t, moving: movingNow(t), at: performance.now() };
-        S.gtAt = t;
-        const g = gtr;
-        netBg.run(fr.img, fr.H, p => { if (p && g === gtr) { req.probs = p; req.ms = Math.round(performance.now() - req.at); S.gtRes = req; } });
-      }
-      return;
-    }
-    if (!due) return;
+    // без фоновых потоков (и в покадровых тестах) — сеть прямо здесь
+    if (t - S.gtAt < READ_MS) return;
     const fr = netFrame();
     if (!fr) return;
     S.gtAt = t;
@@ -1210,10 +1283,8 @@
     S.netPAt = t;
     const K = boardNet.classes;
     const t0 = performance.now();
-    const best = gtr.read(t / 1000, i => {
-      const c = BV.squareToCell(GT.SQUARES[i], S.k) * K;
-      return [probs[c], probs[c + 1], probs[c + 2], K > 3 ? probs[c + 3] : 0];
-    }, i => !!moving[i]);
+    const best = gtr.read(t / 1000, i => BN.probs4(probs, BV.squareToCell(GT.SQUARES[i], S.k), K), i => !!moving[i]);
+    if (window.vcReadTrace) window.vcReadTrace.push({ t: t / 1000, vt: video.currentTime, p: GT.SQUARES.map(sq => BN.probs4(probs, BV.squareToCell(sq, S.k), K).map(x => Math.round(x * 1e4) / 1e4)), m: Array.from(moving, x => x ? 1 : 0) });
     const searchMs = Math.round(performance.now() - t0);
     if (!best) return;
     syncRecord(best.moves, ms, searchMs);
@@ -1245,8 +1316,7 @@
 
   /** Вероятности сети по клетке: [пусто, белая, чёрная, рука]. */
   function netProbs(sq, probs) {
-    const K = boardNet.classes, c = BV.squareToCell(sq, S.k) * K, p = probs || S.netP;
-    return [p[c], p[c + 1], p[c + 2], K > 3 ? p[c + 3] : 0];
+    return BN.probs4(probs || S.netP, BV.squareToCell(sq, S.k), boardNet.classes);
   }
 
   /*
@@ -2030,7 +2100,7 @@
     return `${d.getFullYear()}.${p(d.getMonth() + 1)}.${p(d.getDate())}`;
   }
 
-  function buildPgn(result) {
+  function buildPgn(result, extra) {
     const h = S.headers || {};
     const clean = v => String(v || '').replace(/["\\]/g, "'");
     const g = new Chess();
@@ -2047,11 +2117,13 @@
     if (/^\d+$/.test(h.blackElo || '')) g.header('BlackElo', h.blackElo);
     if (h.time) g.header('TimeControl', clean(h.time));
     g.header('Annotator', 'Запись камерой · live-chessboard');
+    for (const k in extra || {}) g.header(k, clean(extra[k]));
     return g.pgn({ max_width: 80, newline_char: '\n' });
   }
 
   function finishGame(result) {
     $('#finishSheet').hidden = true;
+    bcUpdate(result, true);
     const pgn = buildPgn(result);
     const h = S.headers || {};
     const games = store.get('vc_games', []);
@@ -2090,8 +2162,10 @@
   function debugLogJson() {
     return JSON.stringify({
       app: 'live-chessboard/record', createdAt: new Date().toISOString(), ua: navigator.userAgent,
+      device: { cores: navigator.hardwareConcurrency || null, netWorkers: netBgs.filter(b => !b.failed).length, wasm: S.netWasm == null ? null : S.netWasm },
       video: { width: video.videoWidth || null, height: video.videoHeight || null, recordStartT: S.debug ? S.debug.videoT0 : null, type: S.debug ? S.debug.type : null },
       version: APP_VERSION, corners: S.corners, k: S.k, settings, headers: S.headers,
+      broadcast: (() => { const c = bcConf(); return c.on ? { round: c.round, board: c.board, boards: c.boards, last: bcLast } : null; })(),
       camera: S.cam ? { tilt: Math.round(S.cam.tilt * 10) / 10, diff: BV.diffOpts.mode } : null,
       moves: moveLog, settles: debugLog, quiet: quietLog, net: netLog, perf: perfLog, history: S.chess.history(), pgn: $('#pgnOut').value,
     }, null, 1);
@@ -2493,6 +2567,53 @@
       $('#ghInfo').textContent = 'Токен удалён с этого телефона.';
     });
     $('#btnGhSend').addEventListener('click', ghSend);
+    // трансляция на lichess
+    const bcFill = () => {
+      const c = bcConf();
+      $('#bcRound').value = c.round; $('#bcBoard').value = c.board; $('#bcBoards').value = c.boards;
+      $('#bcOn').checked = !!c.on;
+      $('#bcToken').value = bcToken() ? '••••••••' : '';
+      const n = Math.max(1, Math.floor(+c.boards) || 1);
+      $('#bcRate').textContent = 'Один аккаунт lichess принимает до 120 обновлений в минуту на все свои доски: при ' + n +
+        (n === 1 ? ' доске' : ' досках') + ' ход появится на lichess не позже чем через ' + LB.minInterval(n) + ' с.' +
+        (n > 8 ? ' Быстрее — если у групп досок свои аккаунты lichess (участники трансляции).' : '');
+    };
+    const bcSave = () => {
+      const tok = $('#bcToken').value.trim();
+      if (tok && !/^•+$/.test(tok)) { store.set('vc_bc_token', tok); keepStorage(); }
+      const round = $('#bcRound').value.trim();
+      store.set('vc_bc', { round, board: $('#bcBoard').value.trim(), boards: $('#bcBoards').value.trim(), on: $('#bcOn').checked });
+      bcFill();
+      bcUpdate('*');
+    };
+    if (LB) {
+      bcFromLink();
+      bcFill();
+      window.addEventListener('hashchange', () => { bcFromLink(); bcFill(); });
+      ['#bcRound', '#bcBoard', '#bcBoards', '#bcToken', '#bcOn'].forEach(id => $(id).addEventListener('change', bcSave));
+      $('#bcCheck').addEventListener('click', async () => {
+        bcSave();
+        const round = LB.roundId(bcConf().round);
+        if (!round) { $('#bcInfo').textContent = 'Вставьте ссылку на раунд: lichess.org/broadcast/…/…/xxxxxxxx'; return; }
+        if (!bcToken()) { $('#bcInfo').textContent = 'Вставьте токен lichess.'; return; }
+        $('#bcInfo').textContent = 'Проверяю…';
+        try {
+          const r = await LB.check(round, bcToken());
+          $('#bcInfo').textContent = 'Готово: аккаунт ' + r.user + ', «' + (r.tour || '') + '», ' + (r.round || 'раунд') + '. Доска ' + (Math.floor(+bcConf().board) || 1) + '.';
+        } catch (e) {
+          $('#bcInfo').textContent = 'Не получилось: ' + (e && e.message || e) + '.';
+        }
+      });
+      $('#bcLinks').addEventListener('click', async () => {
+        bcSave();
+        if (!LB.roundId(bcConf().round) || !bcToken()) { $('#bcInfo').textContent = 'Сначала укажите раунд и токен.'; return; }
+        const text = bcLinks();
+        $('#bcLinkList').hidden = false;
+        $('#bcLinkList').value = text;
+        try { await navigator.clipboard.writeText(text); $('#bcInfo').textContent = 'Ссылки скопированы. В них ваш токен — отправляйте их только на телефоны досок. Ссылка, открытая на телефоне, настроит его доску.'; }
+        catch (e) { $('#bcInfo').textContent = 'Скопируйте ссылки из поля ниже. В них ваш токен — отправляйте их только на телефоны досок.'; }
+      });
+    } else $('#bcCard').hidden = true;
     $('#trainFiles').addEventListener('change', e => ghSendTraining(e.target.files));
     $('#trainTokenRow').hidden = !!gh.token;
     $('#trainTokenSave').addEventListener('click', async () => {
@@ -2582,6 +2703,8 @@
     ai,
     /** Покадровая проверка (для повторяемых тестов): свой таймер выключается, кадр — по вызову. */
     manual() { S.manual = true; clearInterval(S.timer); },
+    /** Для замеров: сколько фоновых потоков сети использовать (1 или 2). */
+    setWorkers(n) { netBgs.forEach((b, i) => { b.failed = i >= n; }); },
     netLog,
     perfLog,
     async step(t) {
