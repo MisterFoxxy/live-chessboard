@@ -17,7 +17,7 @@
 
   /* ---------- Константы и утилиты ---------- */
 
-  const APP_VERSION = '17 · быстрый перебор гипотез';
+  const APP_VERSION = '18 · показ исправлений';
   const TICK_MS = 33;      // ~30 кадров/с
   const SETTLE_MS = 600;   // полная проверка, когда вся доска неподвижна
   const PROC_W = 640;
@@ -112,9 +112,9 @@
   const perfLog = [];  // скорость проверок: [время видео, мс сети, мс трекера, мс до ответа]
   // Нейросеть, обученная на записях настоящих партий: что стоит на каждой клетке.
   let boardNet = null, netBg = null;
-  window.vcNetReady = BN ? BN.load((/[?&]net=light/.test(location.search) ? 'models/board-net-light.bnet' : 'models/board-net.bnet') + '?v=17').then(n => {
+  window.vcNetReady = BN ? BN.load((/[?&]net=light/.test(location.search) ? 'models/board-net-light.bnet' : 'models/board-net.bnet') + '?v=18').then(n => {
     boardNet = n;
-    try { if (typeof Worker === 'function') netBg = new BN.Background('js/board-net.js?v=17', n); } catch (e) { netBg = null; }
+    try { if (typeof Worker === 'function') netBg = new BN.Background('js/board-net.js?v=18', n); } catch (e) { netBg = null; }
     return true;
   }).catch(e => { console.warn(e); return false; }) : Promise.resolve(false);
 
@@ -1152,7 +1152,7 @@
   function trackerTick(t) {
     // Телефон: сеть и трекер в фоновом потоке, основной поток только отдаёт кадр и сверяет запись.
     if (netBg && !netBg.failed && !netBg.trackFailed && !S.manual) {
-      if (!netBg.tracking) netBg.trackInit([new URL('js/game-tracker.js?v=17', location.href).href]);
+      if (!netBg.tracking) netBg.trackInit([new URL('js/game-tracker.js?v=18', location.href).href]);
       if (S.gtGen == null || S.gtNeedReset) {
         S.gtGen = (S.gtGen || 0) + 1; S.gtNeedReset = false; S.gtRes = null;
         S.gtBase = S.chess.history().length; S.gtAt = -1e9;
@@ -1231,6 +1231,8 @@
     const played = [];
     for (const m of want.slice(k)) { const p = applyMove({ from: m.from, to: m.to, promotion: m.promotion }, 'net'); if (!p) break; played.push(p.san); }
     e.best = played.join(' ');
+    // переписаны уже записанные ходы — сразу говорим, какие, чтобы было видно, что подогнано
+    if (hist.length > k) toast('Исправлено: ' + (e.rec || '—') + ' → ' + (e.best || '—'));
     netLog.push(e);
     if (netLog.length > 400) netLog.shift();
     if (window.vcNetTrace) window.vcNetTrace.push(e);
