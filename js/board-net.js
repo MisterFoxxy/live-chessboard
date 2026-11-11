@@ -349,7 +349,7 @@
           return;
         }
         if (e.data.track === 'reset') {
-          tr = new self.GameTracker.Tracker(self.Chess); tr.reset(e.data.fen); sqCell = e.data.sqCell; gen = e.data.gen;
+          tr = new self.GameTracker.Tracker(null); tr.reset(e.data.fen); sqCell = e.data.sqCell; gen = e.data.gen;
           return;
         }
         const img = { data: new Uint8ClampedArray(e.data.img), width: e.data.width, height: e.data.height };
@@ -360,7 +360,7 @@
         if (tr && e.data.gen === gen && e.data.t != null) {
           const K = net.classes, mv = e.data.moving;
           const b = tr.read(e.data.t / 1000, i => { const c = sqCell[i] * K; return [p[c], p[c + 1], p[c + 2], K > 3 ? p[c + 3] : 0]; }, i => !!mv[i]);
-          best = b ? b.moves.map(m => m.san) : null;
+          best = b ? b.moves.map(m => ({ from: m.from, to: m.to, promotion: m.promotion })) : null;
         }
         self.postMessage({ p: p.buffer, best, gen: e.data.gen, ms: { net: t1 - t0, track: Date.now() - t1 } }, [p.buffer]);
       } catch (err) {

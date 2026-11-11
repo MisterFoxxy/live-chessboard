@@ -13,7 +13,8 @@
  *   • храним по несколько гипотез с разным числом ходов: «медленная» верная не выпадает раньше времени.
  * За одну проверку гипотеза может продлиться на 1–2 хода (лучшие — на 3).
  *
- * Работает и в браузере (window.GameTracker), и в Node (для проверок). Нужен chess.js.
+ * Работает и в браузере (window.GameTracker), и в Node (для проверок). Ходы генерирует сам
+ * (быстрее chess.js в десятки раз); ходы в ответе — {from, to, promotion}.
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
@@ -36,6 +37,7 @@
     recent: 4,     // «свежее» изменение клетки, с
     d3: 2,         // скольким лучшим гипотезам можно продлиться сразу на 3 хода
     minVisible: 24,
+    budget: 0,     // мс на одну проверку (0 — без предела); лучшие гипотезы перебираются первыми
     startBad: 2,   // старт: сколько клеток может не сходиться с начальной позицией
   };
 
@@ -48,49 +50,148 @@
 
   Tracker.prototype.reset = function (fen) {
     this.startFen = fen || null;
-    const c = new this.Chess();
-    if (fen) c.load(fen);
-    this.beam = [{ fen: c.fen(), moves: [], acc: 0 }];
+    this.beam = [{ node: this.node(fen || 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'), moves: [], acc: 0 }];
     this.started = false;
     this.obsCls = new Int8Array(64).fill(-1);
     this.obsSince = new Float64Array(64);
     this.reads = 0;
   };
 
-  /** Позиция: классы клеток и легальные ходы (считаем один раз на позицию). */
-  Tracker.prototype.node = function (fen) {
-    let n = this.cache.get(fen);
-    if (n) return n;
-    const c = new this.Chess(fen);
+  /* ---------- Свой быстрый генератор ходов ----------
+   * chess.js при каждом переборе считает запись ходов (SAN) и проверку шаха — для перебора гипотез
+   * это лишнее и в десятки раз медленнее. Здесь позиция — массив из 64 клеток (0 = a1), фигура:
+   * 1 пешка, 2 конь, 3 слон, 4 ладья, 5 ферзь, 6 король; +8 — чёрная. Ходы генерируем только с
+   * нужной клетки, легальность — «не остаётся ли свой король под боем».
+   */
+  const PAWN = 1, KNIGHT = 2, BISHOP = 3, ROOK = 4, QUEEN = 5, KING = 6, BLACK = 8;
+  const KN = [[1, 2], [2, 1], [2, -1], [1, -2], [-1, -2], [-2, -1], [-2, 1], [-1, 2]];
+  const DIAG = [[1, 1], [1, -1], [-1, 1], [-1, -1]], ORTH = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  const ALL8 = DIAG.concat(ORTH);
+  const LETTER = { p: PAWN, n: KNIGHT, b: BISHOP, r: ROOK, q: QUEEN, k: KING };
+  const at = (r, f) => (r >= 0 && r < 8 && f >= 0 && f < 8 ? r * 8 + f : -1);
+
+  function fromFen(fen) {
+    const [place, turn, cast, ep] = fen.split(' ');
+    const b = new Int8Array(64);
+    place.split('/').forEach((row, i) => {
+      let f = 0;
+      for (const ch of row) {
+        if (ch >= '1' && ch <= '8') { f += +ch; continue; }
+        const lo = ch.toLowerCase();
+        b[(7 - i) * 8 + f] = LETTER[lo] | (ch === lo ? BLACK : 0);
+        f++;
+      }
+    });
+    let c = 0;
+    if (cast && cast !== '-') { if (cast.indexOf('K') >= 0) c |= 1; if (cast.indexOf('Q') >= 0) c |= 2; if (cast.indexOf('k') >= 0) c |= 4; if (cast.indexOf('q') >= 0) c |= 8; }
+    return { b, turn: turn === 'b' ? 1 : 0, castle: c, ep: ep && ep !== '-' ? IDX[ep] : -1 };
+  }
+  function keyOf(pos) { return String.fromCharCode.apply(null, pos.b) + pos.turn + pos.castle + ',' + pos.ep; }
+  function clsOf(pos) {
     const cls = new Int8Array(64);
-    for (let i = 0; i < 64; i++) { const p = c.get(SQ[i]); cls[i] = p ? (p.color === 'w' ? 1 : 2) : 0; }
-    n = { cls, list: null, c };
-    if (this.cache.size > 5000) this.cache.clear();
-    this.cache.set(fen, n);
+    for (let i = 0; i < 64; i++) cls[i] = pos.b[i] ? (pos.b[i] & BLACK ? 2 : 1) : 0;
+    return cls;
+  }
+  /** Бьёт ли сторона byBlack клетку sq. */
+  function attacked(b, sq, byBlack) {
+    const r = sq >> 3, f = sq & 7, col = byBlack ? BLACK : 0;
+    const pr = byBlack ? r + 1 : r - 1; // пешка бьёт по диагонали вперёд
+    for (const df of [-1, 1]) { const s2 = at(pr, f + df); if (s2 >= 0 && b[s2] === (PAWN | col)) return true; }
+    for (const [dr, df] of KN) { const s2 = at(r + dr, f + df); if (s2 >= 0 && b[s2] === (KNIGHT | col)) return true; }
+    for (const [dr, df] of ALL8) { const s2 = at(r + dr, f + df); if (s2 >= 0 && b[s2] === (KING | col)) return true; }
+    for (const [dr, df] of DIAG) {
+      for (let k = 1; ; k++) { const s2 = at(r + dr * k, f + df * k); if (s2 < 0) break; const p = b[s2]; if (!p) continue; if (p === (BISHOP | col) || p === (QUEEN | col)) return true; break; }
+    }
+    for (const [dr, df] of ORTH) {
+      for (let k = 1; ; k++) { const s2 = at(r + dr * k, f + df * k); if (s2 < 0) break; const p = b[s2]; if (!p) continue; if (p === (ROOK | col) || p === (QUEEN | col)) return true; break; }
+    }
+    return false;
+  }
+  /** Позиция после хода m = {from, to, promo, ep, castle} (без проверки легальности). */
+  function make(pos, m) {
+    const b = new Int8Array(pos.b), p = b[m.from], black = (p & BLACK) !== 0;
+    b[m.to] = m.promo ? (m.promo | (p & BLACK)) : p; b[m.from] = 0;
+    if (m.ep) b[m.to + (black ? 8 : -8)] = 0;
+    if (m.castle) { const r = m.from & ~7; if (m.to > m.from) { b[r + 5] = b[r + 7]; b[r + 7] = 0; } else { b[r + 3] = b[r]; b[r] = 0; } }
+    let c = pos.castle;
+    const clear = sq => { if (sq === 4) c &= ~3; if (sq === 60) c &= ~12; if (sq === 0) c &= ~2; if (sq === 7) c &= ~1; if (sq === 56) c &= ~8; if (sq === 63) c &= ~4; };
+    clear(m.from); clear(m.to);
+    const ep = (p & 7) === PAWN && Math.abs(m.to - m.from) === 16 ? (m.from + m.to) >> 1 : -1;
+    return { b, turn: 1 - pos.turn, castle: c, ep };
+  }
+  function kingSq(b, black) { const k = KING | (black ? BLACK : 0); for (let i = 0; i < 64; i++) if (b[i] === k) return i; return -1; }
+  /** Легальные ходы фигуры с клетки from (превращение — только в ферзя: тип фигуры сеть не различает). */
+  function movesFromSq(pos, from) {
+    const b = pos.b, p = b[from], out = [];
+    if (!p) return out;
+    const black = (p & BLACK) !== 0;
+    if (black !== (pos.turn === 1)) return out;
+    const type = p & 7, r = from >> 3, f = from & 7, own = black ? BLACK : 0;
+    const enemy = s => b[s] && (b[s] & BLACK) !== own;
+    const push = (to, extra) => out.push(Object.assign({ from, to }, extra || {}));
+    if (type === PAWN) {
+      const dir = black ? -1 : 1, last = black ? 0 : 7, start = black ? 6 : 1;
+      const one = at(r + dir, f);
+      if (one >= 0 && !b[one]) {
+        push(one, r + dir === last ? { promo: QUEEN } : null);
+        const two = at(r + 2 * dir, f);
+        if (r === start && !b[two]) push(two);
+      }
+      for (const df of [-1, 1]) {
+        const s2 = at(r + dir, f + df);
+        if (s2 < 0) continue;
+        if (enemy(s2)) push(s2, r + dir === last ? { promo: QUEEN } : null);
+        else if (s2 === pos.ep) push(s2, { ep: true });
+      }
+    } else if (type === KNIGHT || type === KING) {
+      for (const [dr, df] of type === KNIGHT ? KN : ALL8) { const s2 = at(r + dr, f + df); if (s2 >= 0 && (!b[s2] || enemy(s2))) push(s2); }
+      if (type === KING) {
+        const base = black ? 56 : 0, ks = black ? 4 : 1, qs = black ? 8 : 2, opp = !black;
+        if (from === base + 4 && !attacked(b, from, opp)) {
+          if ((pos.castle & ks) && !b[base + 5] && !b[base + 6] && b[base + 7] === (ROOK | own) && !attacked(b, base + 5, opp) && !attacked(b, base + 6, opp)) push(base + 6, { castle: true });
+          if ((pos.castle & qs) && !b[base + 3] && !b[base + 2] && !b[base + 1] && b[base] === (ROOK | own) && !attacked(b, base + 3, opp) && !attacked(b, base + 2, opp)) push(base + 2, { castle: true });
+        }
+      }
+    } else {
+      const dirs = type === BISHOP ? DIAG : type === ROOK ? ORTH : ALL8;
+      for (const [dr, df] of dirs) {
+        for (let k = 1; ; k++) { const s2 = at(r + dr * k, f + df * k); if (s2 < 0) break; if (!b[s2]) { push(s2); continue; } if (enemy(s2)) push(s2); break; }
+      }
+    }
+    // легальность: свой король не под боем
+    return out.filter(m => { const n = make(pos, m); const k = kingSq(n.b, black); return k >= 0 && !attacked(n.b, k, !black); });
+  }
+
+  /** Позиция в кэше: что стоит на клетках и ходы с отдельных клеток. */
+  Tracker.prototype.node = function (pos) {
+    const k = typeof pos === 'string' ? null : keyOf(pos);
+    if (typeof pos === 'string') pos = fromFen(pos);
+    const key = k || keyOf(pos);
+    let n = this.cache.get(key);
+    if (n) return n;
+    n = { pos, key, cls: clsOf(pos), from: new Map() };
+    if (this.cache.size > 50000) this.cache.clear();
+    this.cache.set(key, n);
     return n;
   };
-
-  Tracker.prototype.moves = function (fen) {
-    const n = this.node(fen);
-    if (!n.list) {
-      const c = n.c;
-      n.list = c.moves({ verbose: true }).map(m => {
-        c.move(m);
-        const f2 = c.fen();
-        c.undo();
-        return { san: m.san, from: IDX[m.from], to: IDX[m.to], color: m.color === 'w' ? 1 : 2, fen: f2 };
-      });
+  Tracker.prototype.movesFrom = function (n, sq) {
+    let list = n.from.get(sq);
+    if (!list) {
+      list = movesFromSq(n.pos, sq).map(m => ({ m, from: m.from, to: m.to, color: n.pos.turn === 0 ? 1 : 2 }));
+      n.from.set(sq, list);
     }
-    return n.list;
+    return list;
   };
-
-  const key4 = fen => fen.split(' ').slice(0, 4).join(' ');
+  Tracker.prototype.child = function (n, mv) {
+    if (!mv.node) mv.node = this.node(make(n.pos, mv.m));
+    return mv.node;
+  };
 
   /**
    * Очередная проверка сети.
    * t — время, с; probs(i) → [пусто, белая, чёрная, рука] для клетки i (0 = a1 … 63 = h8) или null;
    * moving(i) → true, если на клетке сейчас движение (рука).
-   * Возвращает лучшую гипотезу { moves: [{san, t}], acc } или null, если ещё не начали.
+   * Возвращает лучшую гипотезу { moves: [{from, to, promotion, t}], acc } или null, если ещё не начали.
    */
   Tracker.prototype.read = function (t, probs, moving) {
     const o = this.o;
@@ -116,7 +217,7 @@
       if (conf[i] >= 0 && conf[i] !== this.obsCls[i]) { this.obsCls[i] = conf[i]; this.obsSince[i] = t; }
     }
     if (!this.started) {
-      const cls = this.node(this.beam[0].fen).cls;
+      const cls = this.beam[0].node.cls;
       let bad = 0;
       for (let i = 0; i < 64; i++) if (conf[i] >= 0 && conf[i] !== cls[i]) bad++;
       if (nvis >= 50 && bad <= o.startBad) { this.started = true; this.obsSince.fill(t); }
@@ -124,42 +225,53 @@
     }
     this.reads++;
     const obs = cls => { let s = 0; for (let i = 0; i < 64; i++) if (vis[i]) s += cost[i * 3 + cls[i]]; return s; };
-    const changed = cls => { const out = []; for (let i = 0; i < 64; i++) if (conf[i] >= 0 && conf[i] !== cls[i]) out.push(i); return out; };
-    const ok = m => {
-      if (!vis[m.from]) return false;
-      if (prob[m.from * 3 + m.color] >= 0.5) return false;
-      return t - this.obsSince[m.from] <= o.recent || (t - this.obsSince[m.to] <= o.recent && this.obsCls[m.to] === m.color);
+    const changedSet = cls => { const out = new Set(); for (let i = 0; i < 64; i++) if (conf[i] >= 0 && conf[i] !== cls[i]) out.add(i); return out; };
+    const ok = mv => {
+      if (!vis[mv.from]) return false;
+      if (prob[mv.from * 3 + mv.color] >= 0.5) return false;
+      return t - this.obsSince[mv.from] <= o.recent || (t - this.obsSince[mv.to] <= o.recent && this.obsCls[mv.to] === mv.color);
     };
+    // ходы только с клеток, где по гипотезе стоит фигура ходящего, а сеть её там не видит (условие ok)
+    const fromSquares = n => {
+      const cls = n.cls, col = n.pos.turn === 0 ? 1 : 2, out = [];
+      for (let i = 0; i < 64; i++) if (cls[i] === col && vis[i] && prob[i * 3 + col] < 0.5) out.push(i);
+      return out;
+    };
+    const now = typeof performance !== 'undefined' ? () => performance.now() : () => Date.now();
+    const tEnd = o.budget ? now() + o.budget : Infinity;
     const cand = new Map();
-    const add = (h, fen, newm) => {
-      const k = key4(fen);
-      const acc = h.acc + obs(this.node(fen).cls) + o.pen * newm.length;
-      const prev = cand.get(k);
-      if (!prev || prev.acc > acc) cand.set(k, { fen, moves: newm.length ? h.moves.concat(newm.map(san => ({ san, t }))) : h.moves, acc });
+    const add = (h, node, newm) => {
+      const acc = h.acc + obs(node.cls) + o.pen * newm.length;
+      const prev = cand.get(node.key);
+      if (!prev || prev.acc > acc) cand.set(node.key, { node, moves: newm.length ? h.moves.concat(newm.map(mv => ({ from: SQ[mv.from], to: SQ[mv.to], promotion: mv.m.promo ? 'q' : undefined, t }))) : h.moves, acc });
+    };
+    const expand = (n, ch) => {
+      const out = [];
+      for (const sq of fromSquares(n)) for (const mv of this.movesFrom(n, sq)) {
+        if (!ch.has(mv.from) && !ch.has(mv.to)) continue;
+        if (!ok(mv)) continue;
+        out.push(mv);
+      }
+      return out;
     };
     this.beam.forEach((h, hi) => {
-      add(h, h.fen, []);
-      const ch = new Set(changed(this.node(h.fen).cls));
+      add(h, h.node, []);
+      if (now() > tEnd) return;
+      const n0 = h.node, ch = changedSet(n0.cls);
       if (!ch.size) return;
-      for (const m1 of this.moves(h.fen)) {
-        if (!ch.has(m1.from) && !ch.has(m1.to)) continue;
-        if (!ok(m1)) continue;
-        add(h, m1.fen, [m1.san]);
-        const ch2 = new Set(changed(this.node(m1.fen).cls));
+      for (const m1 of expand(n0, ch)) {
+        const n1 = this.child(n0, m1);
+        add(h, n1, [m1]);
+        const ch2 = changedSet(n1.cls);
         if (!ch2.size) continue;
-        for (const m2 of this.moves(m1.fen)) {
-          if (!ch2.has(m2.from) && !ch2.has(m2.to)) continue;
-          if (!ok(m2)) continue;
-          add(h, m2.fen, [m1.san, m2.san]);
+        for (const m2 of expand(n1, ch2)) {
+          const n2 = this.child(n1, m2);
+          add(h, n2, [m1, m2]);
           if (hi >= o.d3) continue;
           // три хода за одно движение руки (Qg3+ Kf1 Qf2#) — только для лучших гипотез
-          const ch3 = new Set(changed(this.node(m2.fen).cls));
+          const ch3 = changedSet(n2.cls);
           if (!ch3.size) continue;
-          for (const m3 of this.moves(m2.fen)) {
-            if (!ch3.has(m3.from) && !ch3.has(m3.to)) continue;
-            if (!ok(m3)) continue;
-            add(h, m3.fen, [m1.san, m2.san, m3.san]);
-          }
+          for (const m3 of expand(n2, ch3)) add(h, this.child(n2, m3), [m1, m2, m3]);
         }
       }
     });
@@ -168,8 +280,8 @@
     if (o.div) {
       const by = new Map(), keep = [], rest = [];
       for (const h of all) {
-        const n = h.moves.length, c = by.get(n) || 0;
-        if (c < o.div) { by.set(n, c + 1); keep.push(h); } else rest.push(h);
+        const n = h.moves.length, cnt = by.get(n) || 0;
+        if (cnt < o.div) { by.set(n, cnt + 1); keep.push(h); } else rest.push(h);
       }
       beam = keep.concat(rest).slice(0, o.beam).sort((a, b) => a.acc - b.acc);
     } else beam = all.slice(0, o.beam);
@@ -194,5 +306,5 @@
     return k;
   };
 
-  return { Tracker, SQUARES: SQ, DEFAULTS };
+  return { Tracker, SQUARES: SQ, DEFAULTS, _movesFromSq: movesFromSq, _fromFen: fromFen, _make: make };
 }));
