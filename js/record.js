@@ -17,7 +17,7 @@
 
   /* ---------- Константы и утилиты ---------- */
 
-  const APP_VERSION = '16 · ведение партии гипотезами';
+  const APP_VERSION = '17 · быстрый перебор гипотез';
   const TICK_MS = 33;      // ~30 кадров/с
   const SETTLE_MS = 600;   // полная проверка, когда вся доска неподвижна
   const PROC_W = 640;
@@ -112,9 +112,9 @@
   const perfLog = [];  // скорость проверок: [время видео, мс сети, мс трекера, мс до ответа]
   // Нейросеть, обученная на записях настоящих партий: что стоит на каждой клетке.
   let boardNet = null, netBg = null;
-  window.vcNetReady = BN ? BN.load((/[?&]net=light/.test(location.search) ? 'models/board-net-light.bnet' : 'models/board-net.bnet') + '?v=16').then(n => {
+  window.vcNetReady = BN ? BN.load((/[?&]net=light/.test(location.search) ? 'models/board-net-light.bnet' : 'models/board-net.bnet') + '?v=17').then(n => {
     boardNet = n;
-    try { if (typeof Worker === 'function') netBg = new BN.Background('js/board-net.js?v=16', n); } catch (e) { netBg = null; }
+    try { if (typeof Worker === 'function') netBg = new BN.Background('js/board-net.js?v=17', n); } catch (e) { netBg = null; }
     return true;
   }).catch(e => { console.warn(e); return false; }) : Promise.resolve(false);
 
@@ -1144,7 +1144,6 @@
   }
   function trackerReset() { gtr = null; S.gtRes = null; S.gtNeedReset = true; }
   function sqCellMap() { return GT.SQUARES.map(q => BV.squareToCell(q, S.k)); }
-  function chessUrl() { const el = document.querySelector('script[src*="chess"]'); return el ? el.src : 'https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js'; }
   function movingNow(t) {
     const m = new Uint8Array(64);
     for (let i = 0; i < 64; i++) m[i] = t - tracker.since[BV.squareToCell(GT.SQUARES[i], S.k)] < MOVE_MS ? 1 : 0;
@@ -1153,7 +1152,7 @@
   function trackerTick(t) {
     // Телефон: сеть и трекер в фоновом потоке, основной поток только отдаёт кадр и сверяет запись.
     if (netBg && !netBg.failed && !netBg.trackFailed && !S.manual) {
-      if (!netBg.tracking) netBg.trackInit([chessUrl(), new URL('js/game-tracker.js?v=16', location.href).href]);
+      if (!netBg.tracking) netBg.trackInit([new URL('js/game-tracker.js?v=17', location.href).href]);
       if (S.gtGen == null || S.gtNeedReset) {
         S.gtGen = (S.gtGen || 0) + 1; S.gtNeedReset = false; S.gtRes = null;
         S.gtBase = S.chess.history().length; S.gtAt = -1e9;
@@ -1217,20 +1216,24 @@
     }, i => !!moving[i]);
     const searchMs = Math.round(performance.now() - t0);
     if (!best) return;
-    syncRecord(best.moves.map(m => m.san), ms, searchMs);
+    syncRecord(best.moves, ms, searchMs);
   }
 
-  /** Запись = начало партии до трекера + ходы лучшей гипотезы. */
+  /** Запись = начало партии до трекера + ходы лучшей гипотезы ({from, to, promotion}). */
   function syncRecord(want, ms, searchMs) {
-    const hist = S.chess.history().slice(S.gtBase);
+    const hist = S.chess.history({ verbose: true }).slice(S.gtBase);
+    const same = (a, b) => a.from === b.from && a.to === b.to && (a.promotion || '') === (b.promotion || '');
     let k = 0;
-    while (k < hist.length && k < want.length && hist[k] === want[k]) k++;
+    while (k < hist.length && k < want.length && same(hist[k], want[k])) k++;
     if (k === hist.length && k === want.length) return;
-    netLog.push({ t: Math.round(video.currentTime * 100) / 100, rec: hist.slice(k).join(' '), best: want.slice(k).join(' '), ms, search: searchMs, act: 'track' });
-    if (netLog.length > 400) netLog.shift();
-    if (window.vcNetTrace) window.vcNetTrace.push(netLog[netLog.length - 1]);
+    const e = { t: Math.round(video.currentTime * 100) / 100, rec: hist.slice(k).map(m => m.san).join(' '), best: '', ms, search: searchMs, act: 'track' };
     undoPlies(hist.length - k);
-    for (const san of want.slice(k)) if (!applyMove(san, 'net')) break;
+    const played = [];
+    for (const m of want.slice(k)) { const p = applyMove({ from: m.from, to: m.to, promotion: m.promotion }, 'net'); if (!p) break; played.push(p.san); }
+    e.best = played.join(' ');
+    netLog.push(e);
+    if (netLog.length > 400) netLog.shift();
+    if (window.vcNetTrace) window.vcNetTrace.push(e);
     if (hist.length > k) {
       const h2 = S.chess.history({ verbose: true }), last = h2[h2.length - 1];
       S.lastMove = last ? [last.from, last.to] : [];
