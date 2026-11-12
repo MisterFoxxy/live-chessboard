@@ -4,7 +4,7 @@ torch.set_num_threads(int(os.environ.get('THREADS', 4))); torch.manual_seed(5); 
 def load(names):
     X, Y, G, C = [], [], [], []
     for gi, n in enumerate(names):
-        d = np.load(f'crops/{n}.npz'); X.append(d['X']); Y.append(d['Y']); G.append(d['G'].astype(np.int64) + gi * 100000); C.append(d['C'])
+        d = np.load(f"{os.environ.get('CROPS', 'crops')}/{n}.npz"); X.append(d['X']); Y.append(d['Y']); G.append(d['G'].astype(np.int64) + gi * 100000); C.append(d['C'])
     return np.concatenate(X), np.concatenate(Y).astype(np.int64), np.concatenate(G), np.concatenate(C)
 class CropNet(nn.Module):
     def __init__(s, ch=(24, 32, 48, 64, 96), ncls=13):
@@ -40,6 +40,12 @@ def augment(X):
     a = 1 + (torch.rand(n, 1, 1, 1) - 0.5) * 0.5; b = (torch.rand(n, 1, 1, 1) - 0.5) * 0.6
     g = 1 + (torch.rand(n, 3, 1, 1) - 0.5) * 0.12
     out = out * a * g + b
+    if os.environ.get('AUG'):
+        # отражение, поворот и масштаб: наклон и размер фигуры перестают выдавать место на доске
+        flip = torch.rand(n) < 0.5; out[flip] = out[flip].flip(3)
+        ang = (torch.rand(n) - 0.5) * 2 * 0.26; sc = 1 + (torch.rand(n) - 0.5) * 0.3
+        th = torch.zeros(n, 2, 3); th[:, 0, 0] = torch.cos(ang) / sc; th[:, 0, 1] = -torch.sin(ang) / sc; th[:, 1, 0] = torch.sin(ang) / sc; th[:, 1, 1] = torch.cos(ang) / sc
+        out = F.grid_sample(out, F.affine_grid(th, out.shape, align_corners=False), padding_mode='border', align_corners=False)
     return out * MASK if MASK is not None else out
 if __name__ == '__main__':
     tr = os.environ['TRAIN'].split(); te = os.environ.get('TEST', '').split()
@@ -47,7 +53,7 @@ if __name__ == '__main__':
     SW = None
     if os.environ.get('BAL'):
         key = Yt * 64 + Ct.astype(np.int64); cnt2 = np.bincount(key, minlength=13 * 64).astype(np.float64)
-        SW = 1.0 / np.sqrt(cnt2[key]); SW = SW / SW.mean()
+        SW = 1.0 / (cnt2[key] if os.environ['BAL'] == '2' else np.sqrt(cnt2[key])); SW = SW / SW.mean()   # 2: все пары (фигура, клетка) поровну
     if te: Xv, Yv, Gv, Cv = load(te)
     net = CropLite() if os.environ.get('ARCH') == 'lite' else CropNet(); EP = int(os.environ.get('EPOCHS', 12)); BS = 128
     opt = torch.optim.AdamW(net.parameters(), 2e-3, weight_decay=5e-4)
