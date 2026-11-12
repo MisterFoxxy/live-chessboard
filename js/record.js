@@ -17,7 +17,7 @@
 
   /* ---------- Константы и утилиты ---------- */
 
-  const APP_VERSION = '19.1 · ровно 4 проверки в секунду';
+  const APP_VERSION = '19.2 · надёжная отправка отчётов';
   const TICK_MS = 33;      // ~30 кадров/с
   const SETTLE_MS = 600;   // полная проверка, когда вся доска неподвижна
   const PROC_W = 640;
@@ -112,13 +112,13 @@
   const perfLog = [];  // скорость проверок: [время видео, мс сети, мс трекера, мс до ответа]
   // Нейросеть, обученная на записях настоящих партий: что стоит на каждой клетке.
   let boardNet = null, netBg = null, netBgs = [];
-  window.vcNetReady = BN ? BN.load((/[?&]net=light/.test(location.search) ? 'models/board-net-light.bnet' : 'models/board-net.bnet') + '?v=19.1').then(n => {
+  window.vcNetReady = BN ? BN.load((/[?&]net=light/.test(location.search) ? 'models/board-net-light.bnet' : 'models/board-net.bnet') + '?v=19.2').then(n => {
     boardNet = n;
     try {
       if (typeof Worker === 'function') {
         // две копии сети в двух фоновых потоках: кадры обрабатываются по очереди, проверок вдвое больше
         const nw = Math.max(1, Math.min(2, (navigator.hardwareConcurrency || 2) - 1));
-        for (let i = 0; i < nw; i++) netBgs.push(new BN.Background('js/board-net.js?v=19.1', n));
+        for (let i = 0; i < nw; i++) netBgs.push(new BN.Background('js/board-net.js?v=19.2', n));
         netBg = netBgs[0];
       }
     } catch (e) { netBg = null; netBgs = []; }
@@ -1980,6 +1980,7 @@
   /* ---------- Запуск / выход ---------- */
 
   function newGame() {
+    S.ghFolder = null;
     S.chess = new Chess();
     S.times = [];
     S.startedAt = null;
@@ -2223,7 +2224,10 @@
   // Видео и журнал загружаются в закрытый репозиторий владельца (токен хранится только на телефоне),
   // откуда их забирает разработчик. Размер видео не ограничен чатом: большие делим на части.
   const GH_API = 'https://api.github.com';
-  const GH_PART = 15 * 1024 * 1024;
+  // Видео делим на части по 4 МБ: один запрос — около 5,5 МБ и несколько секунд даже на слабой связи.
+  // Части по 15 МБ GitHub на медленной связи отклонял (ответ 401 при рабочем токене), и всё видео терялось.
+  const GH_PART = 4 * 1024 * 1024;
+  const GH_TRIES = 3;
   // Адрес репозитория для отчётов можно вписать сюда. Токен — нельзя: код сайта открыт всем,
   // а GitHub сам отзывает токены, попавшие в открытый репозиторий.
   const GH_DEFAULT_REPO = 'MisterFoxxy/live-chessboard-reports';
@@ -2288,7 +2292,10 @@
 
   const ghPath = p => p.split('/').map(encodeURIComponent).join('/');
 
-  function ghError(status, data) {
+  function ghError(status, data, tokenWorked) {
+    const said = data && data.message ? ' (GitHub: ' + data.message + ')' : '';
+    // токен только что принимали — значит, дело не в нём, а в этом запросе (обычно сбой связи при отправке)
+    if (status === 401 && tokenWorked) return 'GitHub отклонил эту часть, хотя токен рабочий' + said + '.';
     if (status === 401) return 'GitHub не принял токен: проверьте его или создайте новый.';
     if (status === 403) return 'У токена нет права записи (Contents: Read and write) или он истёк.';
     if (status === 404) return 'Репозиторий не найден или токен к нему не допущен.';
@@ -2305,26 +2312,66 @@
     return null;
   }
 
-  /** Загружает файлы в папку репозитория по одному (большие делит на части), с полосой прогресса. */
+  /** Что уже лежит в папке репозитория (после оборванной отправки): имя файла → размер. */
+  async function ghExisting(folder) {
+    const have = new Map();
+    try {
+      const r = await ghRequest('GET', `/repos/${gh.repo}/contents/${ghPath(folder)}`);
+      if (r.status === 200 && Array.isArray(r.data)) for (const f of r.data) have.set(f.name, f.size);
+      have.auth = r.status === 200 || r.status === 404; // 404 — папки ещё нет, но токен принят
+    } catch (e) { /* нет связи — узнаем при отправке */ }
+    return have;
+  }
+
+  /**
+   * Загружает файлы в папку репозитория по одному (большие делит на части), с полосой прогресса.
+   * Каждую часть при сбое повторяет; то, что уже лежит в папке, пропускает — повторная отправка
+   * продолжает с места обрыва. keep у файла: не перезаписывать, если он уже есть (журнал).
+   */
   async function ghUploadFiles(folder, files, label, bar, info) {
     const part = window.vcGhPart || GH_PART; // размер части (в проверках — меньше)
+    const pause = window.vcGhPause == null ? 2000 : window.vcGhPause;
     const list = [];
     for (const f of files) {
       if (f.blob.size <= part) list.push(f);
       else for (let i = 0, k = 1; i < f.blob.size; i += part, k++) list.push({ name: `${f.name}.part${k}`, blob: f.blob.slice(i, i + part) });
     }
-    const total = list.reduce((n, f) => n + f.blob.size, 0) * 4 / 3 + 1;
-    let done = 0;
+    const b64 = n => Math.ceil(n / 3) * 4;
+    const total = list.reduce((n, f) => n + b64(f.blob.size), 0) + 1;
+    let done = 0, sent = 0;
     bar.hidden = false;
     const show = x => { bar.firstElementChild.style.width = Math.min(100, Math.round(x / total * 100)) + '%'; };
     show(0);
-    for (const f of list) {
-      info.textContent = `Отправляю ${f.name} (${(f.blob.size / 1048576).toFixed(1)} МБ)…`;
+    info.textContent = 'Проверяю, что уже отправлено…';
+    const have = await ghExisting(folder);
+    let tokenWorked = !!have.auth;
+    for (let n = 0; n < list.length; n++) {
+      const f = list[n];
+      if (have.get(f.name) === f.blob.size || (f.keep && have.has(f.name))) { done += b64(f.blob.size); sent++; show(done); continue; }
       const content = await blobToBase64(f.blob);
-      const r = await ghRequest('PUT', `/repos/${gh.repo}/contents/${ghPath(folder + '/' + f.name)}`,
-        { message: `${label}: ${f.name}`, content }, loaded => show(done + loaded));
-      if (r.status !== 200 && r.status !== 201) throw new Error(ghError(r.status, r.data));
-      done += content.length;
+      let r = null;
+      for (let attempt = 1; attempt <= GH_TRIES; attempt++) {
+        info.textContent = `Отправляю ${f.name} (${(f.blob.size / 1048576).toFixed(1)} МБ), файл ${n + 1} из ${list.length}${attempt > 1 ? ', попытка ' + attempt : ''}…`;
+        try {
+          r = await ghRequest('PUT', `/repos/${gh.repo}/contents/${ghPath(folder + '/' + f.name)}`,
+            { message: `${label}: ${f.name}`, content }, loaded => show(done + loaded));
+        } catch (e) { r = null; }
+        if (r && (r.status === 200 || r.status === 201)) break;
+        if (r && r.status === 422) {
+          // файл уже есть: прошлая попытка дошла, а ответ потерялся
+          const again = await ghExisting(folder);
+          if (again.get(f.name) === f.blob.size || (f.keep && again.has(f.name))) { r = { status: 201 }; break; }
+        }
+        if (r && (r.status === 403 || r.status === 404 || r.status === 413 || (r.status === 401 && !tokenWorked))) break; // повтор не поможет
+        show(done);
+        if (attempt < GH_TRIES) await new Promise(res => setTimeout(res, pause * attempt));
+      }
+      if (!r || (r.status !== 200 && r.status !== 201)) {
+        const why = r ? ghError(r.status, r.data, tokenWorked) : 'Нет связи с GitHub.';
+        throw new Error(why + (sent ? ` Отправлено файлов: ${sent} из ${list.length} — нажмите ещё раз, продолжу с этого места.` : ''));
+      }
+      tokenWorked = true;
+      done += content.length; sent++;
       show(done);
     }
     show(total);
@@ -2341,9 +2388,14 @@
     }
     btn.disabled = true;
     try {
-      const stamp = new Date().toTimeString().slice(0, 8).replace(/:/g, '');
-      const folder = `reports/${debugBaseName()}-${stamp}`;
-      const files = [{ name: 'log.json', blob: new Blob([debugLogJson()], { type: 'application/json' }) }];
+      // папка одна на партию: повторная отправка после сбоя докладывает недостающие части туда же
+      const base = debugBaseName();
+      if (!S.ghFolder || S.ghFolderBase !== base) {
+        S.ghFolder = `reports/${base}-${new Date().toTimeString().slice(0, 8).replace(/:/g, '')}`;
+        S.ghFolderBase = base;
+      }
+      const folder = S.ghFolder;
+      const files = [{ name: 'log.json', keep: true, blob: new Blob([debugLogJson()], { type: 'application/json' }) }];
       const v = debugVideoFile();
       if (v) files.push({ name: 'video.' + v.name.split('.').pop(), blob: v });
       await ghUploadFiles(folder, files, 'Отчёт ' + debugBaseName(), bar, info);
@@ -2351,7 +2403,7 @@
       info.textContent = `Отправлено: ${gh.repo} → ${folder}. Напишите разработчику «отправил отчёт».`;
       toast('Отчёт отправлен');
     } catch (e) {
-      info.textContent = ghFail(e);
+      info.textContent = ghFail(e) + (debugVideoFile() ? ' Чтобы запись не пропала, сохраните её кнопкой «⬇ Видео».' : '');
     } finally {
       btn.disabled = false;
     }
@@ -2368,14 +2420,16 @@
     const files = Array.from(fileList || []);
     if (!files.length) return;
     $('#trainPick').classList.add('disabled');
-    const d = new Date(), pad = n => String(n).padStart(2, '0');
-    const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+    const pad = n => String(n).padStart(2, '0');
+    // метка папки — по самому файлу (время его создания), а не по времени нажатия: если отправка
+    // оборвалась, тот же файл, выбранный снова, попадёт в ту же папку и докачается
+    const stampOf = f => { const d = new Date(f.lastModified || Date.now()); return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`; };
     let sent = 0;
     try {
       for (const f of files) {
         const base = translit(f.name.replace(/\.[^.]+$/, '')).replace(/[^A-Za-z0-9.-]+/g, '_').replace(/^_+|_+$/g, '') || 'video';
         const ext = (f.name.match(/\.([A-Za-z0-9]+)$/) || [])[1] || 'mp4';
-        const folder = `training/${stamp}-${String(sent + 1).padStart(2, '0')}-${base}`;
+        const folder = `training/${stampOf(f)}-${String(sent + 1).padStart(2, '0')}-${base}`;
         await ghUploadFiles(folder, [{ name: 'video.' + ext.toLowerCase(), blob: f }], `Видео для обучения ${sent + 1}/${files.length}`, bar, info);
         sent++;
       }
