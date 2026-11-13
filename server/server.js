@@ -12,6 +12,7 @@
  */
 'use strict';
 const http = require('http');
+const VERSION = 24;   // пульт сверяет: старый server.js не умеет передавать команды через бесплатный туннель
 const PORT = +(process.env.PORT || 8080);
 const ORIGIN = process.env.ALLOW_ORIGIN || '*';
 const MAX_ROOMS = 500, MAX_BOARDS = 200, MAX_BODY = 32 * 1024, ROOM_TTL = 24 * 3600 * 1000;
@@ -78,7 +79,7 @@ const server = http.createServer(async (req, res) => {
   const q = url.searchParams;
   if (req.method === 'OPTIONS') { cors(res); res.writeHead(204); return res.end(); }
   try {
-    if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { ok: true, rooms: rooms.size });
+    if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { ok: true, version: VERSION, rooms: rooms.size });
 
     if (req.method === 'POST' && url.pathname === '/room') {
       const b = await body(req);
@@ -91,7 +92,7 @@ const server = http.createServer(async (req, res) => {
         rooms.set(b.room, r);
       }
       if (typeof b.name === 'string') r.name = b.name.slice(0, 120);
-      return json(res, 200, { ok: true, boards: boardList(r) });
+      return json(res, 200, { ok: true, version: VERSION, boards: boardList(r) });
     }
 
     if (req.method === 'GET' && url.pathname === '/room/stream') {
@@ -144,7 +145,7 @@ const server = http.createServer(async (req, res) => {
       const b = await body(req);
       const r = room(b.room), n = b.board;
       if (!r || !okBoard(n)) return json(res, 404, { error: 'нет такой комнаты' });
-      const keep = ['phase', 'ok', 'text', 'plies', 'last', 'fen', 'white', 'black', 'result', 'battery', 'version', 'warn', 'pieces', 'bc'];
+      const keep = ['phase', 'go', 'ok', 'text', 'plies', 'last', 'fen', 'white', 'black', 'result', 'battery', 'version', 'warn', 'pieces', 'bc'];
       const st = { at: Date.now() };
       for (const k of keep) if (b[k] !== undefined) st[k] = typeof b[k] === 'string' ? b[k].slice(0, 200) : b[k];
       if (r.boards.size >= MAX_BOARDS && !r.boards.has(n)) return json(res, 503, { error: 'слишком много досок' });
@@ -153,7 +154,7 @@ const server = http.createServer(async (req, res) => {
       // команды, которых телефон ещё не видел (seq — номер последней полученной); новый телефон получает только «начать»
       const seen = Number.isInteger(b.seq) && b.seq >= 0 && b.seq <= r.seq ? b.seq : null;
       const cmds = seen == null ? (r.started.has(n) ? [r.started.get(n)] : []) : (r.log.get(n) || []).filter(m => m.seq > seen);
-      return json(res, 200, { ok: true, started: r.started.has(n), seq: r.seq, cmds });
+      return json(res, 200, { ok: true, version: VERSION, started: r.started.has(n), seq: r.seq, cmds });
     }
 
     json(res, 404, { error: 'не найдено' });

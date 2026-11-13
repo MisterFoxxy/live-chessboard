@@ -44,6 +44,8 @@
   .qr img, .qr canvas { width: 100%; height: auto; image-rendering: pixelated; }
   .qr a { color: #333; word-break: break-all; font-size: 10px; }
   .err { color: var(--red); }
+  .warn { background: #3a1d1f; border: 1px solid var(--red); color: #ffd3d6; border-radius: 10px; padding: 8px 10px; font-size: 13px; }
+  .bd .warn { padding: 5px 7px; font-size: 12px; }
   @media print { header, .card:not(#linksCard), .bar, #boards { display: none !important; } body, main { background: #fff; } .qr { break-inside: avoid; } }
 </style>
 </head>
@@ -53,6 +55,7 @@
   <span id="link" class="muted">нет связи с сервером</span>
 </header>
 <main>
+  <div id="srvWarn" class="warn" hidden style="margin-bottom:14px"></div>
   <section class="card" id="setupCard">
     <div class="row">
       <label>Адрес сервера пульта<input id="server" placeholder="https://пульт.пример.рф" autocomplete="off" spellcheck="false"/></label>
@@ -96,6 +99,6 @@
   </section>
 </main>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
-<script src="js/control.js?v=23"></script>
+<script src="js/control.js?v=24"></script>
 </body>
 </html>

@@ -17,7 +17,7 @@
 
   /* ---------- Константы и утилиты ---------- */
 
-  const APP_VERSION = '23 · пульт работает через бесплатный туннель';
+  const APP_VERSION = '24 · пульт показывает, дошла ли команда';
   const TICK_MS = 33;      // ~30 кадров/с
   const SETTLE_MS = 600;   // полная проверка, когда вся доска неподвижна
   const PROC_W = 640;
@@ -322,6 +322,7 @@
     const hist = S.chess.history();
     const st = {
       phase: S.error ? 'error' : S.phase === 'setup' ? 'search' : S.phase === 'ready' ? (S.ctlStarted ? 'started' : 'ready') : S.phase,
+      go: !!S.ctlStarted,          // команда «Начать» получена
       text: $('#status').textContent,
       plies: hist.length, last: hist.slice(-2).join(' '), fen: S.chess.fen(),
       white: (S.headers && S.headers.white) || '', black: (S.headers && S.headers.black) || '',
@@ -3040,7 +3041,7 @@
 
     window.addEventListener('resize', layoutCam);
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible' && S.phase !== 'idle' && S.phase !== 'finished') keepAwake();
+      if (document.visibilityState === 'visible' && S.phase !== 'idle' && S.phase !== 'finished') { keepAwake(); ctlReport(true); }   // заодно сразу забрать команды пульта
     });
     window.addEventListener('beforeunload', autosaveIfRecording);
   }
