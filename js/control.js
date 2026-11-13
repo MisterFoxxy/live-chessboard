@@ -15,7 +15,7 @@
     .then(r => r.json().then(j => { if (!r.ok) throw new Error(j.error || ('ошибка ' + r.status)); return j; }));
 
   let T = null;            // { server, room, key, name, boards, pairs: [[w, b]], bc: {round, token, per} }
-  let es = null;
+  let es = null, poll = null;
   const boards = {};       // n → состояние от телефона
 
   const PHASE = {
@@ -74,7 +74,6 @@
 
   function stateOf(b) {
     if (!b || !b.online) return 'offline';
-    if (b.at && Date.now() - b.at > 15000) return 'offline';
     return b.phase || 'search';
   }
 
@@ -110,15 +109,27 @@
       .catch(e => alert('Не получилось: ' + e.message));
   }
 
+  // Бесплатный туннель Cloudflare не пропускает поток событий — поэтому пульт ещё и опрашивает сервер каждые 2 с
+  function refresh() {
+    if (!T) return;
+    fetchJ(T.server + '/room', { room: T.room, key: T.key, name: T.name, boards: T.boards }).then(j => {
+      for (const k in boards) delete boards[k];
+      (j.boards || []).forEach(b => { boards[b.board] = b; });
+      renderBoards();
+      $('#link').textContent = '● на связи с сервером'; $('#link').style.color = 'var(--green)';
+    }).catch(() => { $('#link').textContent = 'нет связи с сервером — повторяю…'; $('#link').style.color = 'var(--red)'; });
+  }
+
   function connect() {
     if (es) es.close();
+    if (poll) clearInterval(poll);
+    poll = setInterval(refresh, 2000);
     $('#link').textContent = 'подключаюсь…';
     fetchJ(T.server + '/room', { room: T.room, key: T.key, name: T.name, boards: T.boards }).then(j => {
       (j.boards || []).forEach(b => { boards[b.board] = b; });
       renderBoards();
       es = new EventSource(T.server + '/room/stream?room=' + encodeURIComponent(T.room) + '&key=' + encodeURIComponent(T.key));
       es.onopen = () => { $('#link').textContent = '● на связи с сервером'; $('#link').style.color = 'var(--green)'; };
-      es.onerror = () => { $('#link').textContent = 'нет связи — переподключаюсь…'; $('#link').style.color = 'var(--red)'; };
       es.addEventListener('boards', e => { const list = JSON.parse(e.data); for (const k in boards) delete boards[k]; list.forEach(b => { boards[b.board] = b; }); renderBoards(); });
       es.addEventListener('board', e => { const b = JSON.parse(e.data); boards[b.board] = Object.assign(boards[b.board] || {}, b); renderBoards(); });
     }).catch(e => { $('#link').textContent = 'сервер не отвечает: ' + e.message; $('#link').style.color = 'var(--red)'; });
