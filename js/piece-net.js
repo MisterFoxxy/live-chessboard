@@ -121,9 +121,11 @@ if (typeof importScripts === 'function' && typeof window === 'undefined' && type
    * Что стоит на клетках cells = [[r, c], …] (строка и столбец в кадре). img — кадр, Hunit — гомография
    * «единичный квадрат доски → пиксели кадра» (как BoardVision.computeHomography). Возвращает Float32Array n×13.
    */
-  Net.prototype.read = function (img, Hunit, cells) {
+  Net.prototype.read = function (img, Hunit, cells, cam) {
     const H8 = [Hunit[0] / 8, Hunit[1] / 8, Hunit[2], Hunit[3] / 8, Hunit[4] / 8, Hunit[5], Hunit[6] / 8, Hunit[7] / 8, Hunit[8]];
-    const cam = camera(H8, img.width, img.height), K = this.classes.length, res = new Float32Array(cells.length * K);
+    // cam можно передать готовым: если img — вырезанный кусок кадра, центр куска — не центр кадра
+    cam = cam || camera(H8, img.width, img.height);
+    const K = this.classes.length, res = new Float32Array(cells.length * K);
     for (let n = 0; n < cells.length; n++) {
       crop(img, H8, cells[n][0], cells[n][1], cam, this._x);
       res.set(this.net.classify(normalize(this._x, this.band)), n * K);
@@ -148,11 +150,11 @@ if (typeof importScripts === 'function' && typeof window === 'undefined' && type
     this.w.onerror = () => { this.busy = false; this.failed = true; const cb = this.cb; this.cb = null; if (cb) cb(null); };
   }
   /** cb(вероятности n×13 или null, мс) придёт позже; false — поток занят. */
-  Background.prototype.read = function (img, Hunit, cells, cb) {
+  Background.prototype.read = function (img, Hunit, cells, cam, cb) {
     if (this.busy || this.failed) return false;
-    const data = img.data.buffer.slice(0);
+    const data = img.data.buffer;   // кадр снят только для этой проверки — отдаём без копирования
     this.busy = true; this.cb = cb;
-    this.w.postMessage({ img: data, width: img.width, height: img.height, H: Array.from(Hunit), cells }, [data]);
+    this.w.postMessage({ img: data, width: img.width, height: img.height, H: Array.from(Hunit), cells, cam }, [data]);
     return true;
   };
 
@@ -163,7 +165,7 @@ if (typeof importScripts === 'function' && typeof window === 'undefined' && type
       try {
         if (e.data.buf) { net = new Net(e.data.buf); return; }
         const t0 = Date.now();
-        const p = net.read({ data: new Uint8ClampedArray(e.data.img), width: e.data.width, height: e.data.height }, e.data.H, e.data.cells);
+        const p = net.read({ data: new Uint8ClampedArray(e.data.img), width: e.data.width, height: e.data.height }, e.data.H, e.data.cells, e.data.cam);
         self.postMessage({ p: p.buffer, ms: Date.now() - t0 }, [p.buffer]);
       } catch (err) {
         self.postMessage({ error: String(err && err.message || err) });

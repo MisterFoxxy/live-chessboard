@@ -17,7 +17,7 @@
 
   /* ---------- Константы и утилиты ---------- */
 
-  const APP_VERSION = '20 · сеть узнаёт фигуры (проверка)';
+  const APP_VERSION = '21 · ход виден после подтверждения, быстрые ходы подряд';
   const TICK_MS = 33;      // ~30 кадров/с
   const SETTLE_MS = 600;   // полная проверка, когда вся доска неподвижна
   const PROC_W = 640;
@@ -115,18 +115,18 @@
   // вторая сеть: узнаёт тип фигуры по крупному снимку (js/piece-net.js); запись ходов она не ведёт, а сверяет
   const PN = window.PieceNet;
   let pieceNet = null, pieceBg = null;
-  window.vcPieceReady = PN && !window.vcNoPieces ? PN.load('models/piece-net.bnet?v=20').then(n => {
+  window.vcPieceReady = PN && !window.vcNoPieces ? PN.load('models/piece-net.bnet?v=21').then(n => {
     pieceNet = n;
-    try { if (typeof Worker === 'function') pieceBg = new PN.Background('js/piece-net.js?v=20', n); } catch (e) { pieceBg = null; }
+    try { if (typeof Worker === 'function') pieceBg = new PN.Background('js/piece-net.js?v=21', n); } catch (e) { pieceBg = null; }
     return true;
   }).catch(e => { console.warn(e); return false; }) : Promise.resolve(false);
-  window.vcNetReady = BN ? BN.load((/[?&]net=light/.test(location.search) ? 'models/board-net-light.bnet' : 'models/board-net.bnet') + '?v=20').then(n => {
+  window.vcNetReady = BN ? BN.load((/[?&]net=light/.test(location.search) ? 'models/board-net-light.bnet' : 'models/board-net.bnet') + '?v=21').then(n => {
     boardNet = n;
     try {
       if (typeof Worker === 'function') {
         // две копии сети в двух фоновых потоках: кадры обрабатываются по очереди, проверок вдвое больше
         const nw = Math.max(1, Math.min(2, (navigator.hardwareConcurrency || 2) - 1));
-        for (let i = 0; i < nw; i++) netBgs.push(new BN.Background('js/board-net.js?v=20', n));
+        for (let i = 0; i < nw; i++) netBgs.push(new BN.Background('js/board-net.js?v=21', n));
         netBg = netBgs[0];
       }
     } catch (e) { netBg = null; netBgs = []; }
@@ -1224,30 +1224,48 @@
   function trackerOn() {
     return !!(boardNet && GT && settings.ai && !window.vcNoTracker && S.cam && S.cam.tilt < QUIET_MAX_TILT);
   }
-  function trackerReset() { gtr = null; S.gtRes = null; S.gtNeedReset = true; S.gtQueue = []; S.pcWrong = {}; S.pcRes = {}; S.pcGen = (S.pcGen || 0) + 1; }
+  function trackerReset() { gtr = null; S.gtRes = null; S.gtNeedReset = true; S.gtQueue = []; S.pcWrong = {}; S.pcRes = {}; S.pcTodo = []; S.pcGen = (S.pcGen || 0) + 1; }
 
   /*
    * Сверка фигур: раз в PIECE_MS на спокойной доске вторая сеть (js/piece-net.js) смотрит на каждую фигуру
    * крупным планом и говорит, что это за фигура. Ответ сравнивается с записью. Запись сеть не меняет:
    * пока это проверка и сбор сведений (в журнале отчёта — поле pieces).
    */
-  const PIECE_MS = 1500, PIECE_W = 720;
+  // Приоритет у записи ходов: сеть фигур берёт работу порциями по PIECE_CHUNK фигур, только на спокойной доске
+  // и только когда хотя бы одна копия основной сети свободна; между порциями — пауза PIECE_GAP.
+  const PIECE_MS = 1500, PIECE_W = 720, PIECE_CHUNK = 3, PIECE_GAP = 200;
   const PIECE_NAMES = ['', 'P', 'N', 'B', 'R', 'Q', 'K', 'p', 'n', 'b', 'r', 'q', 'k'];
   const PIECE_RU = { p: ['пешка', 1], n: ['конь', 0], b: ['слон', 0], r: ['ладья', 1], q: ['ферзь', 0], k: ['король', 0] };   // [название, женский род]
-  const pieceLog = [];   // [время видео, фигур, совпало, мс, «клетка:запись>ответ:уверенность …»]
+  const pieceLog = [];   // [время видео, фигур, совпало, мс, «клетка:запись>ответ:уверенность …», прочитано снимков]
   const pcCanvas = document.createElement('canvas');
   const pcCtx = pcCanvas.getContext('2d', { willReadFrequently: true });
 
+  /**
+   * Кадр для сети фигур: только область доски (с запасом на высокие фигуры) в разрешении до PIECE_W по ширине кадра.
+   * Возвращает кусок кадра, гомографию для него и положение камеры, посчитанное по всему кадру.
+   */
   function pieceFrame() {
     if (!video.videoWidth || !S.H || !proc.width) return null;
-    const w = Math.min(video.videoWidth, PIECE_W), h = Math.round(video.videoHeight * w / video.videoWidth), s = w / proc.width;
+    const vw = video.videoWidth, vh = video.videoHeight;
+    const fw = Math.min(vw, PIECE_W), fh = Math.round(vh * fw / vw), s = fw / proc.width, k = fw / vw;
+    const H = S.H.slice();
+    for (let i = 0; i < 6; i++) H[i] *= s;                  // доска → пиксели кадра шириной fw
+    const H8 = [H[0] / 8, H[1] / 8, H[2], H[3] / 8, H[4] / 8, H[5], H[6] / 8, H[7] / 8, H[8]];
+    const cam = PN.camera(H8, fw, fh);
+    let x0 = fw, y0 = fh, x1 = 0, y1 = 0;
+    for (const [u, v] of [[-0.25, -0.25], [1.25, -0.25], [1.25, 1.25], [-0.25, 1.25]]) {
+      const w = H[6] * u + H[7] * v + H[8], x = (H[0] * u + H[1] * v + H[2]) / w, y = (H[3] * u + H[4] * v + H[5]) / w;
+      x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+    }
+    x0 = Math.max(0, Math.floor(x0)); y0 = Math.max(0, Math.floor(y0)); x1 = Math.min(fw, Math.ceil(x1)); y1 = Math.min(fh, Math.ceil(y1));
+    const w = x1 - x0, h = y1 - y0;
+    if (w < 64 || h < 64) return null;
     if (pcCanvas.width !== w || pcCanvas.height !== h) { pcCanvas.width = w; pcCanvas.height = h; }
-    pcCtx.drawImage(video, 0, 0, w, h);
+    pcCtx.drawImage(video, x0 / k, y0 / k, w / k, h / k, 0, 0, w, h);
     let img;
     try { img = pcCtx.getImageData(0, 0, w, h); } catch (e) { return null; }
-    const H = S.H.slice();
-    for (let i = 0; i < 6; i++) H[i] *= s;
-    return { img, H };
+    for (let i = 0; i < 3; i++) { H[i] -= x0 * H[6 + i]; H[3 + i] -= y0 * H[6 + i]; }   // в координаты куска
+    return { img, H, cam };
   }
 
   /** Клетки, которые стоит проверить: где фигура по записи и где её видит сеть «цвет». */
@@ -1264,32 +1282,41 @@
 
   function pieceTick(t) {
     if (!pieceNet || !settings.ai || S.phase !== 'recording' && !S.manual) return;
-    if (t - (S.pcAt || -1e9) < PIECE_MS) return;
     if (pieceBg && pieceBg.busy) return;
+    if (t - (S.pcChunkAt || -1e9) < PIECE_GAP) return;
     for (let c = 0; c < 64; c++) if (t - tracker.since[c] < 600) return;   // доска должна быть спокойной
-    const targets = pieceTargets();
-    if (!targets || !targets.length) return;
-    // заново смотрим только клетки, над которыми с прошлого раза что-то двигалось (и изредка — все):
-    // на телефоне один снимок фигуры считается около 30 мс
+    // основная сеть: если обе копии заняты, не мешаем ей
+    if (S.gtQueue && S.gtQueue.filter(r => !r.done).length >= Math.max(1, netBgs.filter(b => !b.failed).length)) return;
     const res = S.pcRes || (S.pcRes = {});
-    const need = targets.filter(x => { const r = res[x.sq]; return !r || tracker.since[x.cell[0] * 8 + x.cell[1]] > r.t || t - r.t > 20000; });
-    S.pcAt = t;
-    if (!need.length) { pieceSummary(targets, 0, 0); return; }
+    if (!S.pcTodo || !S.pcTodo.length) {
+      if (t - (S.pcAt || -1e9) < PIECE_MS) return;
+      const targets = pieceTargets();
+      if (!targets || !targets.length) return;
+      S.pcAt = t;
+      // заново смотрим только клетки, над которыми с прошлого раза что-то двигалось (и изредка — все)
+      S.pcTodo = targets.filter(x => { const r = res[x.sq]; return !r || tracker.since[x.cell[0] * 8 + x.cell[1]] > r.t || t - r.t > 20000; });
+      S.pcRead = 0; S.pcMs = 0;
+      if (!S.pcTodo.length) { pieceSummary(targets, 0, 0); return; }
+    }
+    const chunk = S.pcTodo.splice(0, PIECE_CHUNK);
     const fr = pieceFrame();
-    if (!fr) return;
-    const cells = need.map(x => x.cell), gen = S.pcGen || 0;
+    if (!fr) { S.pcTodo = []; return; }
+    S.pcChunkAt = t;
+    const gen = S.pcGen || 0, last = !S.pcTodo.length;
     const done = (p, ms) => {
       if (!p || gen !== (S.pcGen || 0)) return;
-      need.forEach((x, n) => {
+      chunk.forEach((x, n) => {
         let top = 0;
         for (let j = 1; j < 13; j++) if (p[n * 13 + j] > p[n * 13 + top]) top = j;
         res[x.sq] = { t, ans: PIECE_NAMES[top], p: p[n * 13 + top] };
       });
-      const cur = pieceTargets();
-      if (cur) pieceSummary(cur, ms, need.length);
+      S.pcRead += chunk.length; S.pcMs += ms || 0;
+      // итог — после каждой порции: на быстрой игре круг по всем фигурам может растянуться
+      const cur = pieceTargets(); if (cur) pieceSummary(cur, ms || 0, chunk.length);
     };
-    if (pieceBg && !pieceBg.failed && !S.manual) pieceBg.read(fr.img, fr.H, cells, done);
-    else { const t0 = performance.now(); done(pieceNet.read(fr.img, fr.H, cells), Math.round(performance.now() - t0)); }
+    const cells = chunk.map(x => x.cell);
+    if (pieceBg && !pieceBg.failed && !S.manual) pieceBg.read(fr.img, fr.H, cells, fr.cam, done);
+    else { const t0 = performance.now(); done(pieceNet.read(fr.img, fr.H, cells, fr.cam), Math.round(performance.now() - t0)); }
   }
 
   /** Сравнить ответы сети (по клеткам, с прошлых проверок) с записью. */
@@ -1403,7 +1430,27 @@
     if (window.vcReadTrace) window.vcReadTrace.push({ t: t / 1000, vt: video.currentTime, p: GT.SQUARES.map(sq => BN.probs4(probs, BV.squareToCell(sq, S.k), K).map(x => Math.round(x * 1e4) / 1e4)), m: Array.from(moving, x => x ? 1 : 0) });
     const searchMs = Math.round(performance.now() - t0);
     if (!best) return;
-    syncRecord(best.moves, ms, searchMs);
+    syncRecord(shownMoves(best.moves), ms, searchMs);
+  }
+
+  /*
+   * Какие ходы лучшей гипотезы показать: уже показанные, пока гипотеза с ними согласна, и новые —
+   * только когда доска их подтвердила (клетку «куда» видно чисто, без руки) или все близкие гипотезы
+   * сходятся в них дольше 2 с. Пока рука держит фигуру над промежуточной клеткой, ход не показываем:
+   * так не бывает ложных «Исправлено». Ходы не теряются: трекер их помнит, а при «Закончить партию»
+   * показывается всё (flushTracker).
+   */
+  function shownMoves(want) {
+    if (!gtr || !gtr.confirmed) return want;
+    const hist = S.chess.history({ verbose: true }).slice(S.gtBase);
+    let k = 0;
+    while (k < hist.length && k < want.length && hist[k].from === want[k].from && hist[k].to === want[k].to) k++;
+    return want.slice(0, gtr.confirmed(want, k));
+  }
+
+  /** Показать все ходы трекера, в том числе ещё не подтверждённые (конец партии). */
+  function flushTracker() {
+    if (gtr && gtr.started && trackerOn()) { const b = gtr.best(); if (b) syncRecord(b.moves); }
   }
 
   /** Запись = начало партии до трекера + ходы лучшей гипотезы ({from, to, promotion}). */
@@ -2202,6 +2249,7 @@
   }
 
   function openFinish() {
+    flushTracker();   // перед итогом показываем и ходы, которые доска ещё не подтвердила
     if (S.phase === 'finished' || S.phase === 'idle') return;
     const sug = suggestedResult();
     $$('#finishSheet [data-result]').forEach(b => b.classList.toggle('suggested', b.dataset.result === sug));
@@ -2240,6 +2288,7 @@
 
   function finishGame(result) {
     $('#finishSheet').hidden = true;
+    flushTracker();
     bcUpdate(result, true);
     const pgn = buildPgn(result);
     const h = S.headers || {};
@@ -2873,6 +2922,7 @@
     ai,
     /** Покадровая проверка (для повторяемых тестов): свой таймер выключается, кадр — по вызову. */
     manual() { S.manual = true; clearInterval(S.timer); },
+    flushTracker,
     /** Для замеров: сколько фоновых потоков сети использовать (1 или 2). */
     setWorkers(n) { netBgs.forEach((b, i) => { b.failed = i >= n; }); },
     netLog,

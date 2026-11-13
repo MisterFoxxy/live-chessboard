@@ -35,12 +35,19 @@
     conf: 0.7,     // уверенный ответ сети по клетке
     hand: 0.5,     // клетка закрыта рукой
     recent: 4,     // «свежее» изменение клетки, с
-    d3: 2,         // скольким лучшим гипотезам можно продлиться сразу на 3 хода
+    d3: 6,         // скольким лучшим гипотезам можно продлиться сразу на 3 хода
+    d4: 2,         // … и на 4 хода (после паузы за доской мог пройти целый размен)
     minVisible: 24,
     budget: 0,     // мс на одну проверку (0 — без предела); лучшие гипотезы перебираются первыми
     startBad: 2,   // старт: сколько клеток может не сходиться с начальной позицией
     rate: 0,       // вес проверки = прошедшее время / rate с (0 — каждая проверка весит 1): не зависит от скорости телефона
     mvis: 0.99,    // клетка с движением рядом всё же учитывается, если сеть уверена в ней не меньше mvis, а руки нет (0 — выкл.)
+    maxHold: 2.0,  // ход, который доска ещё не подтвердила чисто, показываем через столько секунд, если гипотезы в нём сходятся
+    holdMargin: 6, // «близкие» гипотезы: отстают от лучшей не больше чем на столько
+    passPen: 0,    // ход вне очереди (одна сторона сходила дважды): гипотеза «пропуск хода» стоит столько сверх обычного хода (0 — выкл.)
+    passTop: 6,    // сколько лучших гипотез проверяют пропуск хода
+    arrive: 1,     // ход виден только по клетке «куда»: там уверенно стоит новая фигура ходящего дольше arrive с,
+                   // а клетку «откуда» сеть по ошибке всё ещё видит занятой (0 — выкл.)
     hid: 0.9,      // ход с клетки под рукой: на клетке «куда» уверенно (не меньше hid) и недавно появилась фигура ходящего (0 — выкл.)
   };
 
@@ -59,6 +66,9 @@
     this.obsSince = new Float64Array(64);
     this.reads = 0;
     this.lastT = null;
+    // «чистое» наблюдение клетки: рука не над ней, движения нет, сеть уверена — что видно и когда в последний раз
+    this.cleanCls = new Int8Array(64).fill(-1);
+    this.cleanT = new Float64Array(64).fill(-1e9);
   };
 
   /* ---------- Свой быстрый генератор ходов ----------
@@ -186,6 +196,11 @@
     }
     return list;
   };
+  /** Та же позиция, но ход у другой стороны (пропуск хода); взятие на проходе пропадает. */
+  Tracker.prototype.passNode = function (n) {
+    if (!n.pass) n.pass = this.node({ b: n.pos.b, turn: 1 - n.pos.turn, castle: n.pos.castle, ep: -1 });
+    return n.pass;
+  };
   Tracker.prototype.child = function (n, mv) {
     if (!mv.node) mv.node = this.node(make(n.pos, mv.m));
     return mv.node;
@@ -217,6 +232,12 @@
       vis[i] = 1; nvis++;
       if (prob[i * 3 + best] >= o.conf) conf[i] = best;
     }
+    this.lastReadT = t;
+    this.lastConf = conf;
+    for (let i = 0; i < 64; i++) {
+      if (!vis[i] || conf[i] < 0 || moving(i)) continue;
+      this.cleanCls[i] = conf[i]; this.cleanT[i] = t;
+    }
     if (nvis < o.minVisible) return this.started ? this.best() : null;
     for (let i = 0; i < 64; i++) {
       if (conf[i] >= 0 && conf[i] !== this.obsCls[i]) { this.obsCls[i] = conf[i]; this.obsSince[i] = t; }
@@ -247,10 +268,10 @@
     const now = typeof performance !== 'undefined' ? () => performance.now() : () => Date.now();
     const tEnd = o.budget ? now() + o.budget : Infinity;
     const cand = new Map();
-    const add = (h, node, newm) => {
-      const acc = h.acc + obs(node.cls) + o.pen * newm.length;
+    const add = (h, node, newm, extra) => {
+      const acc = h.acc + obs(node.cls) + o.pen * newm.length + (extra || 0);
       const prev = cand.get(node.key);
-      if (!prev || prev.acc > acc) cand.set(node.key, { node, moves: newm.length ? h.moves.concat(newm.map(mv => ({ from: SQ[mv.from], to: SQ[mv.to], promotion: mv.m.promo ? 'q' : undefined, t }))) : h.moves, acc });
+      if (!prev || prev.acc > acc) cand.set(node.key, { node, moves: newm.length ? h.moves.concat(newm.map(mv => (mv.pass ? { pass: true, t, c: mv.color } : { from: SQ[mv.from], to: SQ[mv.to], promotion: mv.m.promo ? 'q' : undefined, t, c: mv.color }))) : h.moves, acc });
     };
     // клетка «откуда» под рукой: ход виден только по клетке «куда» (фигуру уже поставили, руку ещё не убрали)
     const okHid = mv => vis[mv.to] && conf[mv.to] === mv.color && prob[mv.to * 3 + mv.color] >= o.hid &&
@@ -267,6 +288,16 @@
         for (let i = 0; i < 64; i++) {
           if (cls[i] !== col || vis[i]) continue;
           for (const mv of this.movesFrom(n, i)) if (ch.has(mv.to) && okHid(mv)) out.push(mv);
+        }
+      }
+      if (o.arrive) {
+        const col = n.pos.turn === 0 ? 1 : 2, cls = n.cls;
+        for (let i = 0; i < 64; i++) {
+          if (cls[i] !== col || !vis[i] || prob[i * 3 + col] < 0.5) continue;   // источник сеть видит занятым — обычное правило его не берёт
+          for (const mv of this.movesFrom(n, i)) {
+            const j = mv.to;
+            if (ch.has(j) && vis[j] && conf[j] === col && this.obsCls[j] === col && t - this.obsSince[j] >= o.arrive && t - this.obsSince[j] <= o.arrive + o.recent) out.push(mv);
+          }
         }
       }
       return out;
@@ -288,7 +319,27 @@
           // три хода за одно движение руки (Qg3+ Kf1 Qf2#) — только для лучших гипотез
           const ch3 = changedSet(n2.cls);
           if (!ch3.size) continue;
-          for (const m3 of expand(n2, ch3)) add(h, this.child(n2, m3), [m1, m2, m3]);
+          for (const m3 of expand(n2, ch3)) {
+            const n3 = this.child(n2, m3);
+            add(h, n3, [m1, m2, m3]);
+            if (hi >= o.d4) continue;
+            // четыре хода: после паузы (телефон не успел, рука закрыла доску) за доской мог пройти целый размен
+            const ch4 = changedSet(n3.cls);
+            if (!ch4.size) continue;
+            for (const m4 of expand(n3, ch4)) add(h, this.child(n3, m4), [m1, m2, m3, m4]);
+          }
+        }
+      }
+      // ход вне очереди: сторона, которая только что ходила, ходит ещё раз (на быстрой игре бывает) —
+      // записываем «пропуск хода» соперника и этот ход, иначе трекер начнёт выдумывать ходы
+      if (o.passPen && hi < o.passTop && h.moves.length && !h.moves[h.moves.length - 1].pass) {
+        const np = this.passNode(n0), pass = { pass: true, color: n0.pos.turn === 0 ? 1 : 2 };
+        for (const m1 of expand(np, ch)) {
+          const n1 = this.child(np, m1);
+          add(h, n1, [pass, m1], o.passPen);
+          const ch2 = changedSet(n1.cls);
+          if (!ch2.size) continue;
+          for (const m2 of expand(n1, ch2)) add(h, this.child(n1, m2), [pass, m1, m2], o.passPen);
         }
       }
     });
@@ -309,6 +360,39 @@
   };
 
   Tracker.prototype.best = function () { return this.beam[0]; };
+
+  /** Клетки, где последняя проверка уверенно видит не то, что стоит по лучшей гипотезе (индексы 0 = a1 … 63 = h8). */
+  Tracker.prototype.mismatch = function (fresh) {
+    const b = this.best(), out = [], t = this.lastReadT, win = fresh == null ? 20 : fresh;
+    if (!b || !this.lastConf) return out;
+    // давняя ошибка сети на клетке (картинка не менялась дольше win с) — не расхождение записи
+    for (let i = 0; i < 64; i++) if (this.lastConf[i] >= 0 && this.lastConf[i] !== b.node.cls[i] && t - this.obsSince[i] <= win) out.push(i);
+    return out;
+  };
+
+  /**
+   * Сколько ходов moves[from…] подряд уже подтверждены доской: после того как ход попал в гипотезу,
+   * клетку «куда» хоть раз было видно чисто (без руки и без движения) с фигурой ходящего.
+   * Пока рука держит фигуру над клеткой, ход в записи не показываем — так не бывает ложных «Исправлено».
+   * Следующие ходы ждут предыдущий: запись — всегда начало гипотезы.
+   */
+  Tracker.prototype.confirmed = function (moves, from, maxHold) {
+    const now = this.lastReadT, wait = maxHold == null ? this.o.maxHold : maxHold, margin = this.o.holdMargin;
+    // ходы, в которых сходятся все гипотезы, отстающие от лучшей не больше чем на margin
+    const near = this.beam.filter(h => h.acc <= margin);
+    const agreed = j => near.every(h => h.moves.length > j && h.moves[j].from === moves[j].from && h.moves[j].to === moves[j].to && !h.moves[j].pass === !moves[j].pass);
+    let k = from || 0;
+    while (k < moves.length) {
+      let m = moves[k], n = 1;
+      if (m.pass) { if (k + 1 >= moves.length) break; m = moves[k + 1]; n = 2; }   // пропуск — вместе со следующим ходом
+      const i = IDX[m.to];
+      const clean = this.cleanT[i] >= m.t && this.cleanCls[i] === m.c;
+      // доска подтвердила; или ход ждёт дольше wait, и все близкие гипотезы с ним согласны
+      if (!(clean || (now != null && now - m.t >= wait && agreed(k) && (n === 1 || agreed(k + 1))))) break;
+      k += n;
+    }
+    return k;
+  };
 
   /** Сколько первых ходов совпадает у всех гипотез в пределах margin — эти ходы уже не изменятся. */
   Tracker.prototype.locked = function (margin) {

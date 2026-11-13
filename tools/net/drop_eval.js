@@ -16,7 +16,7 @@ for (const g of games) for (const ph of (process.env.PHASES || '_app0,_app83,_ap
     const tr = new GT.Tracker(null, opts); tr.reset(d.fen || undefined);
     for (const x of d.reads) if (rnd() >= drop) tr.read(x.t, i => x.p[i], i => !!x.m[i]);
     const c = new Chess(d.fen || undefined), san = [];
-    for (const m of tr.best().moves) { const mv = c.move({ from: m.from, to: m.to, promotion: m.promotion || 'q' }); if (!mv) break; san.push(mv.san); }
+    for (const m of tr.best().moves) { if (m.pass) { const f = c.fen().split(' '); f[1] = f[1] === 'w' ? 'b' : 'w'; f[3] = '-'; c.load(f.join(' ')); san.push('--'); continue; } const mv = c.move({ from: m.from, to: m.to, promotion: m.promotion || 'q' }); if (!mv) break; san.push(mv.san); }
     const e = lev(san.slice(0, r.length), r); tot += e; runs++; if (!e) perf++; per[g] = (per[g] || 0) + e;
   }
 }
