@@ -281,6 +281,38 @@
   };
 
   /**
+   * Сеть-классификатор (js/piece-net.js): вход size×size, карта на выходе 1×1 → вероятности классов.
+   * x — Float32Array 3×size×size, уже нормированный.
+   */
+  Net.prototype.classify = function (x) {
+    let S = this.size, C = 3, a;
+    if (!this.noWasm && this.initWasm()) {
+      const W = this.wasm, f = W.f, ex = W.ex;
+      let P = S + 2, cur = W.A, nxt = W.B;
+      f.fill(0, cur, cur + 3 * P * P);
+      for (let c = 0; c < 3; c++) for (let y = 0; y < S; y++) f.set(x.subarray(c * S * S + y * S, c * S * S + (y + 1) * S), cur + c * P * P + (y + 1) * P + 1);
+      for (const l of W.layers) {
+        if (l.type === 'pool') { ex.pool(cur * 4, C, S, nxt * 4); S >>= 1; }
+        else { ex.conv(cur * 4, l.in, S, l.pw * 4, l.pb * 4, nxt * 4, l.out, l.k, l.relu ? 1 : 0); C = l.out; }
+        const t = cur; cur = nxt; nxt = t;
+      }
+      a = f.subarray(cur, cur + C * (S + 2) * (S + 2));
+    } else {
+      a = pad(x, C, S);
+      for (const l of this.layers) {
+        if (l.type === 'pool') { a = pool(a, C, S); S >>= 1; } else { a = conv(a, l, S); C = l.out; }
+      }
+    }
+    if (S !== 1) throw new Error('classify: на выходе не 1×1');
+    const res = new Float32Array(C);
+    let m = -Infinity, sum = 0;
+    for (let j = 0; j < C; j++) { res[j] = a[j * 9 + 4]; if (res[j] > m) m = res[j]; }
+    for (let j = 0; j < C; j++) { res[j] = Math.exp(res[j] - m); sum += res[j]; }
+    for (let j = 0; j < C; j++) res[j] /= sum;
+    return res;
+  };
+
+  /**
    * Вероятности клетки в виде [пусто, белая, чёрная, рука] — для любой сети: 4 класса
    * или 14 (пусто, 6 белых фигур, 6 чёрных, рука; тип фигуры пока не используем).
    */

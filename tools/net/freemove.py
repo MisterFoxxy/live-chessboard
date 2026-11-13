@@ -16,15 +16,26 @@ rr = np.array([r for r, c in RC]); cc = np.array([c for r, c in RC])
 NEED = int(os.environ.get('NEED', 2))       # столько проверок подряд картина должна быть одной и той же (0,5 с)
 MINVIS = int(os.environ.get('MINVIS', 58))  # столько клеток должно быть видно
 WIN = float(os.environ.get('WIN', 6))       # фигура в руке: столько секунд ждём, где она появится
-ident = np.zeros(64, np.int8)               # тип фигуры на клетке: 0 пусто, 1..12, -1 фигура неизвестного типа
+ident = np.zeros(64, np.int16)              # тип фигуры на клетке: 0 пусто, 1..12; меньше 0 — фигура неизвестного типа (номер дорожки)
+tracks = {}                                 # номер дорожки → {c: цвет, types: возможные типы, par: дорожки-кандидаты, lp: сумма log p, n}
+def new_track(c, cands):
+    k = -(100 + len(tracks)); kn = {ghost[x][0] for x in cands if ghost[x][0] > 0}; par = {ghost[x][0] for x in cands if ghost[x][0] < 0}
+    tracks[k] = dict(c=c, types=kn, par=par, lp=np.zeros(13), n=0, any=not cands)
+    return k
 seen = np.zeros(64, np.int8)                # что сеть видела в прошлый спокойный момент: 0 пусто, 1 белая, 2 чёрная
 for sq, p in board.piece_map().items(): ident[sq] = CODE[p.symbol()]; seen[sq] = 1 if p.color else 2
 ghost = {}                                  # клетка → (тип, цвет, когда пропала)
+maybe = {}                                  # клетка → (тип, цвет, дорожки): пропала в неясный момент — возможно, стоит на месте, возможно, это она переехала
 # ответы сети «крупный план» в спокойные моменты (calmcrops.py): точнее видит, занята ли клетка, и отличает пешку от фигуры
 CP = {}
-if os.path.exists(f'cache/{name}_cp.npz') and os.environ.get('CP', '1') != '0':
-    z = np.load(f'cache/{name}_cp.npz'); CP = {int(i): p.astype(np.float32) for i, p in zip(z['I'], z['P'])}
+CPF = f"cache/{name}_{os.environ.get('TAG', 'cp')}.npz"
+if os.path.exists(CPF) and os.environ.get('CP', '1') != '0':
+    z = np.load(CPF); CP = {int(i): p.astype(np.float32) for i, p in zip(z['I'], z['P'])}
 PAWN = {1, 7}
+def compatible(cp, y, typ):
+    """Сеть «крупный план» не возражает, что на клетке y фигура типа typ (среди типов этого цвета)."""
+    T = list(range(1, 7)) if typ <= 6 else list(range(7, 13)); p = cp[y][T]; p = p / max(float(p.sum()), 1e-6)
+    return p[T.index(typ)] >= 0.3
 def pick(cp, y, types):
     """Тип появившейся фигуры среди возможных types по сети «крупный план»; None — не уверена."""
     types = sorted(types)
@@ -59,9 +70,14 @@ for i in range(len(T)):
             ident[x] = 0
         left = []
         for y in came:                                                             # вернулась на своё место
-            g = ghost.get(y)
+            g = ghost.get(y); mb = maybe.get(y)
             if g and g[1] == obs[y] and y not in now_gone: ident[y] = g[0]; del ghost[y]; st['restored'] += 1
-            else: left.append(y)
+            elif mb and mb[1] == obs[y] and mb[0] > 0 and cp is not None and compatible(cp, y, mb[0]):
+                # фигура из неясного события снова видна на своей клетке и похожа на себя: значит, переезжала не она
+                ident[y] = mb[0]; del maybe[y]; st['restored'] += 1
+                for k in mb[2]:
+                    if len(tracks[k]['types']) > 1: tracks[k]['types'].discard(mb[0])
+            else: maybe.pop(y, None); left.append(y)
         for c in (1, 2):
             ys = [y for y in left if obs[y] == c]
             if not ys: continue
@@ -81,25 +97,65 @@ for i in range(len(T)):
                     if cands and all(ghost[x][0] > 0 for x in cands): typ = pick(cp, y, {ghost[x][0] for x in cands})
                     if typ is None or veto(y, typ):
                         if os.environ.get('DBG'): print(f"  ? {t:6.1f} цвет {c} {chess.square_name(y)}: возможные {[(chess.square_name(x), ghost[x][0]) for x in cands]}")
-                        ident[y] = -1; st['unknown'] += 1; continue
+                        ident[y] = new_track(c, cands); st['unknown'] += 1; continue
                     best = sorted([x for x in cands if ghost[x][0] == typ], key=lambda x: (x not in same, -ghost[x][2]))[0]
                     ident[y] = typ; del ghost[best]; st['bytype'] = st.get('bytype', 0) + 1
-                for x in same: ghost.pop(x, None) if False else None
+                ks = [int(ident[y]) for y in ys if ident[y] < 0]
+                if ks:
+                    for x in same:
+                        g = ghost.pop(x, None)
+                        if g: maybe[x] = (g[0], g[1], ks)
             else:
                 if os.environ.get('DBG'): print(f"  ? {t:6.1f} цвет {c} появились {[chess.square_name(y) for y in ys]} пропали сейчас {[chess.square_name(x) for x in same]} недавно {[(chess.square_name(x), round(t - ghost[x][2], 1)) for x in late]} все призраки этого цвета {[(chess.square_name(x), round(t - g[2])) for x, g in ghost.items() if g[1] == c]}")
-                for y in ys: ident[y] = -1; st['unknown'] += 1
-                for x in same: ghost.pop(x, None)                                  # кто из них куда ушёл — неизвестно
+                cs = [x for x, g in ghost.items() if g[1] == c]; ks = []
+                for y in ys: ident[y] = new_track(c, cs); ks.append(int(ident[y])); st['unknown'] += 1
+                for x in same:                                                     # кто из них куда ушёл — неизвестно; типы помнит дорожка
+                    g = ghost.pop(x, None)
+                    if g: maybe[x] = (g[0], g[1], ks)
         seen = obs.astype(np.int8).copy()
-    y8 = np.full((8, 8), -1, np.int8)
+    y8 = np.full((8, 8), -1, np.int16)
     for sq in range(64):
-        if not ok[sq] or (ident[sq] == 0 and sq in ghost): continue               # закрыта рукой / фигура, возможно, стоит, но не видна
+        if not ok[sq] or (ident[sq] == 0 and (sq in ghost or sq in maybe)): continue  # закрыта рукой / фигура, возможно, стоит, но не видна
         y8[RC[sq]] = ident[sq]
+        if ident[sq] < 0 and cp is not None:                                       # копим мнение сети «крупный план» о неизвестной фигуре
+            tr = tracks[int(ident[sq])]; tr['lp'] += np.log(cp[sq] + 1e-4); tr['n'] += 1
     Ts.append(t); Ys.append(y8)
+# тип неизвестных фигур: выбираем среди возможных (тех, кого разметчик потерял) по среднему мнению сети за всё время дорожки
+ALLT = {1: {1, 2, 3, 4, 5, 6}, 2: {7, 8, 9, 10, 11, 12}}; res = {}
+def cand_types(k, depth=0):
+    tr = tracks[k]; T = set(tr['types'])
+    for p in tr['par']:
+        if p in res: T.add(res[p])
+        elif depth < 6: T |= cand_types(p, depth + 1)
+        else: return ALLT[tr['c']]
+    return T if T and not tr['any'] else ALLT[tr['c']]
+THR = float(os.environ.get('TRK', 0.9))
+for _ in range(4):
+    for k, tr in tracks.items():
+        if k in res or tr['n'] < 3: continue
+        T = sorted(cand_types(k)); z = tr['lp'][T] / tr['n']; p = np.exp(z - z.max()); p = p / p.sum()
+        if len(T) == 1 or p.max() >= THR: res[k] = T[int(p.argmax())]
+Yall = np.array(Ys, np.int16)
+if os.environ.get('TRK', '1') != '0' and CP:
+    for k, typ in res.items(): Yall[Yall == k] = typ
+    # проверка счётом: двух королей или трёх ладей одного цвета быть не может — такие метки снимаем
+    LIM = {1: 8, 2: 2, 3: 2, 4: 2, 5: 1, 6: 1}; bad = 0
+    for j in range(len(Yall)):
+        for typ in range(1, 13):
+            if (Yall[j] == typ).sum() > LIM[(typ - 1) % 6 + 1]:
+                ks = {k for k, v in res.items() if v == typ}
+                for k in ks: res[k] = None
+                bad += 1
+    Yall = np.array(Ys, np.int16)
+    for k, typ in res.items():
+        if typ: Yall[Yall == k] = typ
+    st['resolved'] = sum(1 for v in res.values() if v); st['conflicts'] = bad
+Yall[Yall < 0] = -1
 keep = list(range(0, len(Ts), 2))
-Ya = np.array(Ys, np.int8)[keep]; Ta = np.array(Ts)[keep]
+Ya = Yall.astype(np.int8)[keep]; Ta = np.array(Ts)[keep]
 np.savez_compressed(f'data13/{name}_auto.npz', Y=Ya, T=Ta, k=K, X=np.zeros((0, 200, 200, 3), np.uint8))
 known = int((Ya > 0).sum()); unk = int(((Ya == -1)).sum())
-print(name, f"по типу {st.get('bytype', 0)};", f"перестановок {st['moves']} + {st['later']} (подняли, потом поставили), вернулись на место {st['restored']}, пропаж {st['vanished']}, неизвестных {st['unknown']}; снимков {len(keep)}, фигур с известным типом {known}")
+print(name, f"дорожек неизвестных {len(tracks)}, определено по сети {st.get('resolved', 0)};", f"по типу {st.get('bytype', 0)};", f"перестановок {st['moves']} + {st['later']} (подняли, потом поставили), вернулись на место {st['restored']}, пропаж {st['vanished']}, неизвестных {st['unknown']}; снимков {len(keep)}, фигур с известным типом {known}")
 last = Ya[-1]; print('  в конце известны типы у', int((last > 0).sum()), 'фигур; по типам за весь клип:', {n: int((Ya == c).sum()) for n, c in CODE.items()})
 if len(sys.argv) > 3:   # проверка: сравнить с разметкой по правилам (data13/<argv[3]>.npz)
     ref = np.load(f'data13/{sys.argv[3]}.npz'); rt = {round(float(tt), 3): y for tt, y in zip(ref['T'], ref['Y'])}

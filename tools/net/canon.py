@@ -18,8 +18,9 @@ def camera(quad, W, H):
     lam = (np.linalg.norm(a) + np.linalg.norm(b)) / 2
     a, b, t = a / lam, b / lam, t / lam
     if t[2] < 0: a, b, t = -a, -b, -t
-    R = np.stack([a, b, np.cross(a, b)], 1)
-    U, _, Vt = np.linalg.svd(R); R = U @ Vt
+    # ортонормируем так же, как js/piece-net.js: r1 вдоль a, r2 — b без составляющей вдоль r1, r3 = r1 × r2
+    r1 = a / np.linalg.norm(a); r2 = b - (b @ r1) * r1; r2 = r2 / np.linalg.norm(r2)
+    R = np.stack([r1, r2, np.cross(r1, r2)], 1)
     C = -R.T @ t
     return float(C[0]), float(C[1]), float(abs(C[2]))
 
@@ -39,4 +40,28 @@ def crops64(w, S, cells, nadir, out=64):
         A = np.float32([[ex * ka, -ux * kb, px - ex * ka * out / 2 + ux * 1.7 * S],
                         [ey * ka, -uy * kb, py - ey * ka * out / 2 + uy * 1.7 * S]])
         res[i] = cv2.warpAffine(w, A, (out, out), flags=cv2.INTER_AREA | cv2.WARP_INVERSE_MAP, borderMode=cv2.BORDER_REPLICATE)
+    return res
+
+def crops_direct(frame, quad, cells, nadir, out=64):
+    """То же, что crops64, но снимок берётся прямо из кадра (как в приложении, js/piece-net.js): для каждой точки выреза
+    считаем её место на доске, через гомографию — место в кадре, и берём цвет билинейно; 2×2 отсчёта на точку."""
+    Hm = dlt([(0, 0), (8, 0), (8, 8), (0, 8)], quad)
+    n = out * 2
+    o = (np.arange(n, dtype=np.float32) + 0.5) / 2                  # координаты отсчётов в точках выреза
+    ox, oy = np.meshgrid(o, o)
+    res = np.empty((len(cells), out, out, 3), np.uint8)
+    ka = 1.5 / out; kb = 2.3 / out
+    for i, (r, c) in enumerate(cells):
+        px, py = c + 0.5, r + 0.5                                   # центр клетки, в клетках
+        ux, uy = px - nadir[0], py - nadir[1]; d = np.hypot(ux, uy)
+        if d < 0.5: ux, uy = 0.0, -1.0
+        else: ux, uy = ux / d, uy / d
+        ex, ey = -uy, ux
+        bx = px + ex * (ox - out / 2) * ka + ux * (1.7 - oy * kb)
+        by = py + ey * (ox - out / 2) * ka + uy * (1.7 - oy * kb)
+        w = Hm[2, 0] * bx + Hm[2, 1] * by + Hm[2, 2]
+        mx = ((Hm[0, 0] * bx + Hm[0, 1] * by + Hm[0, 2]) / w - 0.5).astype(np.float32)
+        my = ((Hm[1, 0] * bx + Hm[1, 1] * by + Hm[1, 2]) / w - 0.5).astype(np.float32)
+        big = cv2.remap(frame, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE).astype(np.float32)
+        res[i] = np.round(big.reshape(out, 2, out, 2, 3).mean((1, 3))).astype(np.uint8)
     return res

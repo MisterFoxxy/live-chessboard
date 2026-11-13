@@ -24,6 +24,7 @@ p = subprocess.Popen(['ffmpeg', '-v', 'error', '-i', VIDEO, '-vf', 'fps=8', '-f'
 rng = np.random.default_rng(1)
 import canon
 CANON = bool(_os.environ.get('CANON'))
+DIRECT = bool(_os.environ.get('DIRECT'))   # снимки прямо из кадра, как в приложении -> dcrops/
 NAD = canon.camera(quad, W, H)
 if CANON: print(name, 'камера: надир (%.1f, %.1f) клеток, высота %.1f клеток' % NAD)
 X, Y, G, C = [], [], [], []
@@ -43,11 +44,12 @@ while True:
             y = int(Y8[b, r, c])
             if y < 0 or (y == 0 and (NOEMPTY or rng.random() > 0.12)): continue
             cells.append((r, c)); Y.append(y); G.append(b); C.append(r * 8 + c)
-    if CANON: X.extend(canon.crops64(w, S, cells, NAD))
+    if DIRECT: X.extend(canon.crops_direct(f, quad, cells, NAD))
+    elif CANON: X.extend(canon.crops64(w, S, cells, NAD))
     else:
         for r, c in cells:
             y0 = (r + 1) * S - S // 2; x0 = (c + 1) * S - S // 2          # вырез 2S×2S с центром в центре клетки
             X.append(cv2.resize(w[y0:y0 + 2 * S, x0:x0 + 2 * S], (OUT, OUT), interpolation=cv2.INTER_AREA))
-os.makedirs('ccrops' if CANON else 'crops', exist_ok=True)
-np.savez_compressed(f"{'ccrops' if CANON else 'crops'}/{name}.npz", X=np.array(X, np.uint8), Y=np.array(Y, np.int8), G=np.array(G, np.int32), C=np.array(C, np.int8), k=meta['k'])
+os.makedirs('dcrops' if DIRECT else 'ccrops' if CANON else 'crops', exist_ok=True)
+np.savez_compressed(f"{'dcrops' if DIRECT else 'ccrops' if CANON else 'crops'}/{name}.npz", X=np.array(X, np.uint8), Y=np.array(Y, np.int8), G=np.array(G, np.int32), C=np.array(C, np.int8), k=meta['k'])
 print(name, 'crops', len(X), 'boards', len(TT))

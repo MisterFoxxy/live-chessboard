@@ -17,7 +17,7 @@
 
   /* ---------- Константы и утилиты ---------- */
 
-  const APP_VERSION = '19.2 · надёжная отправка отчётов';
+  const APP_VERSION = '20 · сеть узнаёт фигуры (проверка)';
   const TICK_MS = 33;      // ~30 кадров/с
   const SETTLE_MS = 600;   // полная проверка, когда вся доска неподвижна
   const PROC_W = 640;
@@ -112,13 +112,21 @@
   const perfLog = [];  // скорость проверок: [время видео, мс сети, мс трекера, мс до ответа]
   // Нейросеть, обученная на записях настоящих партий: что стоит на каждой клетке.
   let boardNet = null, netBg = null, netBgs = [];
-  window.vcNetReady = BN ? BN.load((/[?&]net=light/.test(location.search) ? 'models/board-net-light.bnet' : 'models/board-net.bnet') + '?v=19.2').then(n => {
+  // вторая сеть: узнаёт тип фигуры по крупному снимку (js/piece-net.js); запись ходов она не ведёт, а сверяет
+  const PN = window.PieceNet;
+  let pieceNet = null, pieceBg = null;
+  window.vcPieceReady = PN && !window.vcNoPieces ? PN.load('models/piece-net.bnet?v=20').then(n => {
+    pieceNet = n;
+    try { if (typeof Worker === 'function') pieceBg = new PN.Background('js/piece-net.js?v=20', n); } catch (e) { pieceBg = null; }
+    return true;
+  }).catch(e => { console.warn(e); return false; }) : Promise.resolve(false);
+  window.vcNetReady = BN ? BN.load((/[?&]net=light/.test(location.search) ? 'models/board-net-light.bnet' : 'models/board-net.bnet') + '?v=20').then(n => {
     boardNet = n;
     try {
       if (typeof Worker === 'function') {
         // две копии сети в двух фоновых потоках: кадры обрабатываются по очереди, проверок вдвое больше
         const nw = Math.max(1, Math.min(2, (navigator.hardwareConcurrency || 2) - 1));
-        for (let i = 0; i < nw; i++) netBgs.push(new BN.Background('js/board-net.js?v=19.2', n));
+        for (let i = 0; i < nw; i++) netBgs.push(new BN.Background('js/board-net.js?v=20', n));
         netBg = netBgs[0];
       }
     } catch (e) { netBg = null; netBgs = []; }
@@ -495,6 +503,7 @@
         }
       } else if (trackerOn()) {
         trackerTick(tracker.now);
+        pieceTick(tracker.now);
       } else if (!S.ref) {
         if (tracker.isSteady()) setBase(tracker.steadyFeatures());
         else netBootstrap(feat);
@@ -1215,7 +1224,112 @@
   function trackerOn() {
     return !!(boardNet && GT && settings.ai && !window.vcNoTracker && S.cam && S.cam.tilt < QUIET_MAX_TILT);
   }
-  function trackerReset() { gtr = null; S.gtRes = null; S.gtNeedReset = true; S.gtQueue = []; }
+  function trackerReset() { gtr = null; S.gtRes = null; S.gtNeedReset = true; S.gtQueue = []; S.pcWrong = {}; S.pcRes = {}; S.pcGen = (S.pcGen || 0) + 1; }
+
+  /*
+   * Сверка фигур: раз в PIECE_MS на спокойной доске вторая сеть (js/piece-net.js) смотрит на каждую фигуру
+   * крупным планом и говорит, что это за фигура. Ответ сравнивается с записью. Запись сеть не меняет:
+   * пока это проверка и сбор сведений (в журнале отчёта — поле pieces).
+   */
+  const PIECE_MS = 1500, PIECE_W = 720;
+  const PIECE_NAMES = ['', 'P', 'N', 'B', 'R', 'Q', 'K', 'p', 'n', 'b', 'r', 'q', 'k'];
+  const PIECE_RU = { p: ['пешка', 1], n: ['конь', 0], b: ['слон', 0], r: ['ладья', 1], q: ['ферзь', 0], k: ['король', 0] };   // [название, женский род]
+  const pieceLog = [];   // [время видео, фигур, совпало, мс, «клетка:запись>ответ:уверенность …»]
+  const pcCanvas = document.createElement('canvas');
+  const pcCtx = pcCanvas.getContext('2d', { willReadFrequently: true });
+
+  function pieceFrame() {
+    if (!video.videoWidth || !S.H || !proc.width) return null;
+    const w = Math.min(video.videoWidth, PIECE_W), h = Math.round(video.videoHeight * w / video.videoWidth), s = w / proc.width;
+    if (pcCanvas.width !== w || pcCanvas.height !== h) { pcCanvas.width = w; pcCanvas.height = h; }
+    pcCtx.drawImage(video, 0, 0, w, h);
+    let img;
+    try { img = pcCtx.getImageData(0, 0, w, h); } catch (e) { return null; }
+    const H = S.H.slice();
+    for (let i = 0; i < 6; i++) H[i] *= s;
+    return { img, H };
+  }
+
+  /** Клетки, которые стоит проверить: где фигура по записи и где её видит сеть «цвет». */
+  function pieceTargets() {
+    const out = [];
+    for (const sq of BV.SQUARES) {
+      const pc = S.chess.get(sq), cell = BV.squareToCell(sq, S.k);
+      let seen = false;
+      if (S.netP) { const p = netProbs(sq); if (p[3] >= 0.5) return null; seen = p[1] + p[2] >= 0.7; }   // рука над доской — не сейчас
+      if (pc || seen) out.push({ sq, rec: pc ? (pc.color === 'w' ? pc.type.toUpperCase() : pc.type) : '', cell: [cell >> 3, cell & 7] });
+    }
+    return out;
+  }
+
+  function pieceTick(t) {
+    if (!pieceNet || !settings.ai || S.phase !== 'recording' && !S.manual) return;
+    if (t - (S.pcAt || -1e9) < PIECE_MS) return;
+    if (pieceBg && pieceBg.busy) return;
+    for (let c = 0; c < 64; c++) if (t - tracker.since[c] < 600) return;   // доска должна быть спокойной
+    const targets = pieceTargets();
+    if (!targets || !targets.length) return;
+    // заново смотрим только клетки, над которыми с прошлого раза что-то двигалось (и изредка — все):
+    // на телефоне один снимок фигуры считается около 30 мс
+    const res = S.pcRes || (S.pcRes = {});
+    const need = targets.filter(x => { const r = res[x.sq]; return !r || tracker.since[x.cell[0] * 8 + x.cell[1]] > r.t || t - r.t > 20000; });
+    S.pcAt = t;
+    if (!need.length) { pieceSummary(targets, 0, 0); return; }
+    const fr = pieceFrame();
+    if (!fr) return;
+    const cells = need.map(x => x.cell), gen = S.pcGen || 0;
+    const done = (p, ms) => {
+      if (!p || gen !== (S.pcGen || 0)) return;
+      need.forEach((x, n) => {
+        let top = 0;
+        for (let j = 1; j < 13; j++) if (p[n * 13 + j] > p[n * 13 + top]) top = j;
+        res[x.sq] = { t, ans: PIECE_NAMES[top], p: p[n * 13 + top] };
+      });
+      const cur = pieceTargets();
+      if (cur) pieceSummary(cur, ms, need.length);
+    };
+    if (pieceBg && !pieceBg.failed && !S.manual) pieceBg.read(fr.img, fr.H, cells, done);
+    else { const t0 = performance.now(); done(pieceNet.read(fr.img, fr.H, cells), Math.round(performance.now() - t0)); }
+  }
+
+  /** Сравнить ответы сети (по клеткам, с прошлых проверок) с записью. */
+  function pieceSummary(targets, ms, nRead) {
+    const res = S.pcRes || {}, wrong = S.pcWrong || {}, now = {}, diff = [];
+    let agree = 0, n = 0;
+    for (const x of targets) {
+      const r = res[x.sq];
+      if (!r) continue;
+      n++;
+      if (r.ans === x.rec) { agree++; continue; }
+      diff.push(`${x.sq}:${x.rec || '-'}>${r.ans || '-'}:${Math.round(r.p * 100)}`);
+      if (r.p >= 0.8) now[x.sq] = { rec: x.rec, ans: r.ans, n: (wrong[x.sq] && wrong[x.sq].ans === r.ans && wrong[x.sq].rec === x.rec ? wrong[x.sq].n : 0) + 1 };
+    }
+    S.pcWrong = now;
+    S.pcLast = { n, agree, diff };
+    if (nRead) {
+      pieceLog.push([Math.round(video.currentTime * 100) / 100, n, agree, ms, diff.join(' '), nRead]);
+      if (pieceLog.length > 400) pieceLog.shift();
+    }
+    renderPieceInfo();
+  }
+
+  function renderPieceInfo() {
+    const el = $('#pieceInfo');
+    if (!el) return;
+    const L = S.pcLast;
+    el.hidden = !L;
+    if (!L) return;
+    const name = c => {
+      if (!c) return 'пусто';
+      const [word, fem] = PIECE_RU[c.toLowerCase()], white = c === c.toUpperCase();
+      return (white ? (fem ? 'белая ' : 'белый ') : (fem ? 'чёрная ' : 'чёрный ')) + word;
+    };
+    // говорим только о том, что сеть уверенно видит иначе три проверки подряд
+    const firm = Object.keys(S.pcWrong || {}).filter(sq => S.pcWrong[sq].n >= 3).slice(0, 2)
+      .map(sq => `${sq}: в записи ${name(S.pcWrong[sq].rec)}, сеть видит: ${name(S.pcWrong[sq].ans)}`);
+    el.textContent = `🔎 Сеть фигур узнала ${L.agree} из ${L.n}` + (firm.length ? ' · ' + firm.join('; ') : '');
+    el.classList.toggle('bad', firm.length > 0);
+  }
   function sqCellMap() { return GT.SQUARES.map(q => BV.squareToCell(q, S.k)); }
   function movingNow(t) {
     const m = new Uint8Array(64);
@@ -2165,12 +2279,12 @@
   function debugLogJson() {
     return JSON.stringify({
       app: 'live-chessboard/record', createdAt: new Date().toISOString(), ua: navigator.userAgent,
-      device: { cores: navigator.hardwareConcurrency || null, netWorkers: netBgs.filter(b => !b.failed).length, wasm: S.netWasm == null ? null : S.netWasm },
+      device: { cores: navigator.hardwareConcurrency || null, netWorkers: netBgs.filter(b => !b.failed).length, wasm: S.netWasm == null ? null : S.netWasm, pieceNet: pieceNet ? (pieceBg && !pieceBg.failed ? 'worker' : 'main') : null },
       video: { width: video.videoWidth || null, height: video.videoHeight || null, recordStartT: S.debug ? S.debug.videoT0 : null, type: S.debug ? S.debug.type : null },
       version: APP_VERSION, corners: S.corners, k: S.k, settings, headers: S.headers,
       broadcast: (() => { const c = bcConf(); return c.on ? { round: c.round, board: c.board, boards: c.boards, last: bcLast } : null; })(),
       camera: S.cam ? { tilt: Math.round(S.cam.tilt * 10) / 10, diff: BV.diffOpts.mode } : null,
-      moves: moveLog, settles: debugLog, quiet: quietLog, net: netLog, perf: perfLog, history: S.chess.history(), pgn: $('#pgnOut').value,
+      moves: moveLog, settles: debugLog, quiet: quietLog, net: netLog, perf: perfLog, pieces: pieceLog, history: S.chess.history(), pgn: $('#pgnOut').value,
     }, null, 1);
   }
 
@@ -2763,6 +2877,7 @@
     setWorkers(n) { netBgs.forEach((b, i) => { b.failed = i >= n; }); },
     netLog,
     perfLog,
+    pieceLog,
     async step(t) {
       video.pause();
       if (Math.abs(video.currentTime - t) > 1e-4) {
