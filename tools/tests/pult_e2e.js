@@ -1,0 +1,84 @@
+// Пульт турнира: сервер + ноутбук (control.html) + три «телефона» (record.html с видео партий).
+const { chromium } = require('playwright');
+const path = require('path'), fs = require('fs'), { spawn } = require('child_process');
+const S = path.resolve(__dirname, '..');
+const BASE = process.env.BASE || 'http://127.0.0.1:8766', SRV = 'http://127.0.0.1:8790';
+const GAMES = (process.env.GAMES || 'u1s u4s u10s').split(' ');
+(async () => {
+  const srv = spawn('node', ['/home/user/live-chessboard/server/server.js'], { env: Object.assign({}, process.env, { PORT: '8790' }), stdio: 'ignore' });
+  await new Promise(r => setTimeout(r, 600));
+  const check = (c, m) => { console.log((c ? 'ok   ' : 'FAIL ') + m); if (!c) process.exitCode = 1; };
+  const browser = await chromium.launch();
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await ctx.route('**/chess.min.js', r => r.fulfill({ path: path.join(S, 'vendor/package/chess.js'), contentType: 'text/javascript' }));
+  await ctx.route(/fonts\.(googleapis|gstatic)\.com/, r => r.abort());
+  await ctx.route(/cdnjs\.cloudflare\.com\/ajax\/libs\/qrcode-generator/, r => r.fulfill({ contentType: 'text/javascript', body: 'window.qrcode=function(){return{addData(){},make(){},createImgTag(){return "<img alt=qr>"}}}' }));
+  const errors = [];
+  const lap = await ctx.newPage();
+  lap.on('pageerror', e => errors.push('пульт: ' + e));
+  await lap.goto(BASE + '/control.html');
+  await lap.fill('#server', SRV);
+  await lap.fill('#name', 'Тест, тур 1');
+  await lap.fill('#nBoards', String(GAMES.length));
+  await lap.fill('#pairs', 'Иванов – Петров\nСидоров – Кузнецов\nОрлова – Соколова');
+  await lap.click('#create');
+  await lap.waitForFunction(() => /на связи с сервером/.test(document.getElementById('link').textContent), null, { timeout: 5000 }).catch(() => {});
+  const T = await lap.evaluate(() => vcControl.T);
+  check(T && T.room.length === 8 && T.key.length === 24, 'турнир создан, код ' + (T && T.room));
+  const links = await lap.evaluate(n => Array.from({ length: n }, (_, i) => vcControl.phoneLink(i + 1)), GAMES.length);
+  check(links.every((l, i) => l.includes('#ctl=' + SRV) && l.includes('room=' + T.room) && l.includes('board=' + (i + 1))), 'ссылки досок: ' + links[0].replace(/^.*#/, '#'));
+  check((await lap.$$('#links .qr')).length === GAMES.length, 'QR-коды для ' + GAMES.length + ' досок');
+
+  const phones = [];
+  for (let i = 0; i < GAMES.length; i++) {
+    const meta = JSON.parse(fs.readFileSync(path.join(S, 'site/test', GAMES[i] + '.json')));
+    const p = await ctx.newPage();
+    p.on('pageerror', e => errors.push(`доска ${i + 1}: ` + e));
+    await p.setViewportSize({ width: 390, height: 844 });
+    await p.goto(`${BASE}/record.html?video=test/${GAMES[i]}.webm#${links[i].split('#')[1]}`);
+    await p.waitForFunction(() => window.vcDebug && document.getElementById('video').readyState >= 2);
+    await p.evaluate(() => window.vcNetReady);
+    await p.evaluate(m => vcDebug.setCorners(m.corners), meta);
+    phones.push(p);
+  }
+  // как на турнире: фигуры в начальной позиции, игроки ждут команды
+  const CALM = { u1s: 10.5, u12s: 6.5, u10s: 4, u4s: 10.5, u2s: 6, u5s: 8.5 };   // фигуры расставлены, рук над доской нет
+  await Promise.all(phones.map((p, i) => p.evaluate(t => { const v = document.getElementById('video'); v.pause(); v.currentTime = t; }, CALM[GAMES[i]] || 4)));
+  await lap.waitForFunction(n => document.querySelectorAll('div#boards .dot.ready').length === n, GAMES.length, { timeout: 90000 }).catch(() => {});
+  for (const p of phones) console.log('   ', JSON.stringify(await p.evaluate(() => ({ phase: vcDebug.phase(), t: document.getElementById('video').currentTime, rs: document.getElementById('video').readyState, st: document.getElementById('status').textContent.slice(0, 70), recog: vcDebug.state.recog && { k: vcDebug.state.recog.k, ok: vcDebug.state.recog.recognized, score: vcDebug.state.recog.score }, H: !!vcDebug.state.H, ns: vcDebug.state.netStart, steady: vcDebug.tracker.isSteady(), cam: vcDebug.state.cam && Math.round(vcDebug.state.cam.tilt) }))));
+  const ready = await lap.$$eval('div#boards .dot.ready', els => els.length);
+  check(ready === GAMES.length, `пульт: готовы ${ready} из ${GAMES.length} (${await lap.textContent('#summary')})`);
+  const before = await Promise.all(phones.map(p => p.evaluate(() => vcDebug.history().length)));
+  check(before.every(x => x === 0), 'до «Начать» ходы не записываются: ' + before.join(','));
+  await lap.click('#startReady');
+  await Promise.all(phones.map(p => p.waitForFunction(() => vcDebug.state.ctlStarted, null, { timeout: 5000 }).catch(() => {})));
+  await Promise.all(phones.map(p => p.evaluate(() => document.getElementById('video').play())));
+  await Promise.all(phones.map(p => p.waitForFunction(() => document.body.classList.contains('ctl-show'), null, { timeout: 5000 }).catch(() => {})));
+  const shown = await Promise.all(phones.map(p => p.evaluate(() => document.body.classList.contains('ctl-show') && getComputedStyle(document.querySelector('#screenRecord .topbar')).display === 'none' && document.getElementById('board').getBoundingClientRect().width > 300)));
+  check(shown.every(Boolean), 'телефоны показывают только диаграмму: ' + shown.join(','));
+  const names = await phones[1].evaluate(() => vcDebug.state.headers);
+  check(names.white === 'Сидоров' && names.black === 'Кузнецов', 'имена с пульта: ' + names.white + ' – ' + names.black);
+  await phones[0].screenshot({ path: path.join(S, 'pult_phone.png') });
+  await phones[0].waitForFunction(() => document.getElementById('video').ended, null, { timeout: 120000 }).catch(() => {});
+  await lap.waitForTimeout(3000);
+  const h0 = await phones[0].evaluate(() => { vcDebug.flushTracker(); return vcDebug.history(); });
+  const meta0 = JSON.parse(fs.readFileSync(path.join(S, 'site/test', GAMES[0] + '.json')));
+  check(h0.join(' ') === meta0.expected.join(' '), 'доска 1 записала партию: ' + h0.join(' '));
+  await lap.waitForTimeout(2500);
+  const card = await lap.$eval('div#boards .bd[data-n="1"]', el => el.textContent.replace(/\s+/g, ' '));
+  check(new RegExp('полуходов ' + h0.length).test(card), 'пульт видит ходы доски 1: ' + card.slice(0, 120));
+  const vis = await lap.$eval('div#boards .bd[data-n="1"]', el => el.getBoundingClientRect().height > 150);
+  check(vis, 'карточки досок видны на пульте');
+  const pieces = await lap.$$eval('div#boards .bd[data-n="1"] .mini img', els => els.length);
+  check(pieces > 20, 'мини-диаграмма доски 1: фигур ' + pieces);
+  await lap.screenshot({ path: path.join(S, 'pult_laptop.png') });
+  const p4 = await ctx.newPage();
+  await p4.setViewportSize({ width: 390, height: 844 });
+  await p4.goto(`${BASE}/record.html?video=test/${GAMES[1]}.webm#${links[1].split('#')[1]}`);
+  await p4.waitForFunction(() => window.vcDebug && document.getElementById('video').readyState >= 2);
+  await p4.waitForFunction(() => document.body.classList.contains('ctl-show'), null, { timeout: 8000 }).catch(() => {});
+  check(await p4.evaluate(() => document.body.classList.contains('ctl-show')), 'переподключённый телефон сразу получил «Начать»');
+  check(errors.length === 0, 'ошибок на страницах нет ' + errors.join('; '));
+  await browser.close();
+  srv.kill();
+})();

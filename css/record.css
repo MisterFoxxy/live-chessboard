@@ -370,3 +370,15 @@ button { cursor: pointer; }
 .train-card summary { cursor: pointer; font-weight: 600; }
 .train-card .btn { margin-top: 8px; }
 .btn.disabled { opacity: .5; pointer-events: none; }
+
+/* ---------- Пульт турнира: во время партии телефон показывает только диаграмму ---------- */
+.show-bar { display: none; }
+body.ctl-show .topbar, body.ctl-show .tabs, body.ctl-show #status, body.ctl-show #panelScreen,
+body.ctl-show .turn, body.ctl-show #btnFinish, body.ctl-show #moveList, body.ctl-show .board-tools,
+body.ctl-show #panelBoard > .hint, body.ctl-show #promo { display: none !important; }
+/* камера работает дальше (из неё берутся кадры), просто не видна */
+body.ctl-show .cam-wrap { position: fixed !important; left: 0; top: 0; width: 2px !important; height: 2px !important; opacity: 0; pointer-events: none; overflow: hidden; }
+body.ctl-show #panelBoard { display: flex !important; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 0; }
+body.ctl-show .show-bar { display: flex; width: min(100vw, 100vh - 40px); justify-content: space-between; align-items: center; color: var(--muted); font-size: 14px; padding: 6px 4px; }
+body.ctl-show .board { width: min(100vw - 8px, 100vh - 48px) !important; max-width: none !important; margin: 0 auto; }
+.show-exit { background: transparent; border: 1px solid var(--line); color: var(--muted); border-radius: 8px; width: 32px; height: 28px; font-size: 14px; }

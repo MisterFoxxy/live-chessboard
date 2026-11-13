@@ -9,7 +9,7 @@
   <title>Запись партии камерой</title>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet"/>
-  <link rel="stylesheet" href="css/record.css?v=21"/>
+  <link rel="stylesheet" href="css/record.css?v=22"/>
 </head>
 <body>
 <div id="app">
@@ -81,6 +81,18 @@
       <label id="trainPick" for="trainFiles" class="btn primary">Выбрать видео…</label>
       <div id="trainProgress" class="gh-progress" hidden><div></div></div>
       <small id="trainInfo" class="ai-info"></small>
+    </details>
+
+    <details class="card train-card" id="ctlCard">
+      <summary>🖥 Пульт турнира</summary>
+      <p class="hint">Телефон на доске подключается к пульту организатора (страница <b>control.html</b> на ноутбуке). На пульте видно, нашёл ли телефон доску; партия начинается по кнопке «Начать» на пульте, и тогда телефон показывает только диаграмму. Проще всего открыть на телефоне ссылку доски с пульта — всё заполнится само.</p>
+      <label class="field wide"><span>Адрес сервера пульта</span><input id="ctlServer" placeholder="https://…" autocomplete="off" autocapitalize="off" spellcheck="false"/></label>
+      <div class="fields">
+        <label class="field"><span>Код турнира</span><input id="ctlRoom" placeholder="AbCd1234" autocomplete="off" autocapitalize="off" spellcheck="false"/></label>
+        <label class="field"><span>Доска №</span><input id="ctlBoard" placeholder="1" inputmode="numeric"/></label>
+      </div>
+      <label class="toggle"><span>Подключаться к пульту</span><input id="ctlOn" type="checkbox"/></label>
+      <small id="ctlInfo" class="ai-info"></small>
     </details>
 
     <details class="card train-card" id="bcCard">
@@ -178,7 +190,9 @@
         <small id="moveCounter">ходов пока нет</small>
         <small id="bcBadge" class="bc-badge" hidden></small>
         <small id="pieceInfo" class="bc-badge" hidden></small>
+        <small id="ctlBadge" class="bc-badge" hidden></small>
       </div>
+      <div id="showBar" class="show-bar"><span id="showInfo"></span><button id="showExit" class="show-exit" aria-label="Обычный экран">✕</button></div>
       <div id="board" class="board" aria-label="Цифровая доска"></div>
       <div id="promo" class="promo" hidden></div>
       <button id="btnFinish" class="btn primary">Закончить партию</button>
@@ -264,13 +278,14 @@
 <div id="toast" role="status"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js" crossorigin="anonymous"></script>
-<script src="js/board-vision.js?v=21"></script>
-<script src="js/board-detect.js?v=21"></script>
-<script src="js/square-ai.js?v=21"></script>
-<script src="js/board-net.js?v=21"></script>
-<script src="js/piece-net.js?v=21"></script>
-<script src="js/game-tracker.js?v=21"></script>
-<script src="js/broadcast.js?v=21"></script>
-<script src="js/record.js?v=21"></script>
+<script src="js/board-vision.js?v=22"></script>
+<script src="js/board-detect.js?v=22"></script>
+<script src="js/square-ai.js?v=22"></script>
+<script src="js/board-net.js?v=22"></script>
+<script src="js/piece-net.js?v=22"></script>
+<script src="js/game-tracker.js?v=22"></script>
+<script src="js/broadcast.js?v=22"></script>
+<script src="js/pult.js?v=22"></script>
+<script src="js/record.js?v=22"></script>
 </body>
 </html>
