@@ -16,7 +16,10 @@ const PORT = +(process.env.PORT || 8080);
 const ORIGIN = process.env.ALLOW_ORIGIN || '*';
 const MAX_ROOMS = 500, MAX_BOARDS = 200, MAX_BODY = 32 * 1024, ROOM_TTL = 24 * 3600 * 1000;
 
-const rooms = new Map(); // room → { key, name, boards: Map(n → state), started: Map(n → {cmd, data, at}), org: Set(res), phones: Map(n → Set(res)), seen }
+const rooms = new Map(); // room → { key, name, boards: Map(n → state), started: Map(n → {cmd, data, at, seq}), log: Map(n → [msg]), seq, org: Set(res), phones: Map(n → Set(res)), seen }
+// Бесплатный туннель Cloudflare (trycloudflare.com) не пропускает потоки Server-Sent Events,
+// поэтому всё работает и без них: телефон забирает команды в ответе на /board/status, пульт опрашивает /room.
+const ONLINE_MS = 15000;
 
 const okRoom = s => typeof s === 'string' && /^[A-Za-z0-9_-]{4,40}$/.test(s);
 const okKey = s => typeof s === 'string' && /^[A-Za-z0-9_-]{12,80}$/.test(s);
@@ -54,9 +57,10 @@ function room(id) {
 }
 function boardList(r) {
   const out = [];
-  for (const [n, st] of r.boards) out.push(Object.assign({ board: n, online: (r.phones.get(n) || new Set()).size > 0, started: r.started.has(n) }, st));
+  for (const [n, st] of r.boards) out.push(Object.assign({ board: n, online: online(r, n, st), started: r.started.has(n) }, st));
   return out.sort((a, b) => a.board - b.board);
 }
+function online(r, n, st) { return (r.phones.get(n) || new Set()).size > 0 || !!(st && Date.now() - st.at < ONLINE_MS); }
 function toOrg(r, type, obj) { for (const res of r.org) send(res, type, obj); }
 
 // Поток данных каждые 15 с — прокси не закрывают «молчащие» соединения
@@ -83,7 +87,7 @@ const server = http.createServer(async (req, res) => {
       if (r && r.key !== b.key) return json(res, 403, { error: 'комната занята другим организатором' });
       if (!r) {
         if (rooms.size >= MAX_ROOMS) return json(res, 503, { error: 'сервер заполнен' });
-        r = { key: b.key, name: '', boards: new Map(), started: new Map(), org: new Set(), phones: new Map(), seen: Date.now() };
+        r = { key: b.key, name: '', boards: new Map(), started: new Map(), log: new Map(), seq: 0, org: new Set(), phones: new Map(), seen: Date.now() };
         rooms.set(b.room, r);
       }
       if (typeof b.name === 'string') r.name = b.name.slice(0, 120);
@@ -111,7 +115,9 @@ const server = http.createServer(async (req, res) => {
       for (const n of targets) {
         const per = Object.assign({}, data, data.perBoard && data.perBoard[n] ? data.perBoard[n] : {});
         delete per.perBoard;
-        const msg = { cmd: b.cmd, data: per, at: Date.now() };
+        const msg = { cmd: b.cmd, data: per, at: Date.now(), seq: ++r.seq };
+        if (!r.log.has(n)) r.log.set(n, []);
+        const log = r.log.get(n); log.push(msg); if (log.length > 20) log.shift();
         if (b.cmd === 'start') r.started.set(n, msg);          // поздно подключившийся телефон тоже получит «начать»
         if (b.cmd === 'reset') r.started.delete(n);
         const set = r.phones.get(n);
@@ -143,8 +149,11 @@ const server = http.createServer(async (req, res) => {
       for (const k of keep) if (b[k] !== undefined) st[k] = typeof b[k] === 'string' ? b[k].slice(0, 200) : b[k];
       if (r.boards.size >= MAX_BOARDS && !r.boards.has(n)) return json(res, 503, { error: 'слишком много досок' });
       r.boards.set(n, st);
-      toOrg(r, 'board', Object.assign({ board: n, online: (r.phones.get(n) || new Set()).size > 0, started: r.started.has(n) }, st));
-      return json(res, 200, { ok: true, started: r.started.has(n) });
+      toOrg(r, 'board', Object.assign({ board: n, online: true, started: r.started.has(n) }, st));
+      // команды, которых телефон ещё не видел (seq — номер последней полученной); новый телефон получает только «начать»
+      const seen = Number.isInteger(b.seq) && b.seq >= 0 && b.seq <= r.seq ? b.seq : null;
+      const cmds = seen == null ? (r.started.has(n) ? [r.started.get(n)] : []) : (r.log.get(n) || []).filter(m => m.seq > seen);
+      return json(res, 200, { ok: true, started: r.started.has(n), seq: r.seq, cmds });
     }
 
     json(res, 404, { error: 'не найдено' });

@@ -14,12 +14,21 @@ curl http://localhost:8080/health
 **Сервер должен быть доступен по https://** — страницы приложения открыты по https (GitHub Pages), и браузер
 не даст им обращаться к http-адресу. Варианты:
 
-1. **Render.com (бесплатно).** New → Web Service → этот репозиторий; Root Directory: `server`; Build Command: пусто;
+1. **Ноутбук с пультом — без регистрации и карты (проще всего).** Установить Node.js (nodejs.org, кнопка LTS) и
+   положить в одну папку `server.js`, `start-pult.bat` и `cloudflared.exe`
+   (github.com/cloudflare/cloudflared/releases/latest → `cloudflared-windows-amd64.exe`, переименовать).
+   Перед туром — двойной щелчок по `start-pult.bat`: откроется окно сервера, а во втором окне в рамке появится адрес
+   `https://…trycloudflare.com` — его вписать на пульте. Адрес новый при каждом запуске, турнир создавать заново.
+   Вручную: `node server.js` и во втором окне `cloudflared tunnel --protocol http2 --url http://localhost:8080`
+   (`--protocol http2` нужен, если сеть не пропускает QUIC — в выводе `QUIC connection failed`).
+   Такой туннель не пропускает потоки Server-Sent Events, поэтому телефоны забирают команды в ответ на отправку
+   состояния (раз в 2 с), а пульт опрашивает сервер раз в 2 с.
+2. **Render.com** (бесплатный тариф, но просит банковскую карту). New → Web Service → этот репозиторий; Root Directory: `server`; Build Command: пусто;
    Start Command: `node server.js`. Адрес будет вида `https://имя.onrender.com` — его и вписать на пульте.
    Бесплатный сервер засыпает после 15 минут без запросов и просыпается около минуты — откройте пульт заранее.
-2. **Свой VPS.** `node server.js` под systemd или в Docker (`docker build -t pult server && docker run -p 8080:8080 pult`),
+3. **Свой VPS.** `node server.js` под systemd или в Docker (`docker build -t pult server && docker run -p 8080:8080 pult`),
    а https даёт Caddy: в `Caddyfile` строка `pult.ваш-домен.рф { reverse_proxy localhost:8080 }`.
-3. **Любой хостинг с Node.js** — то же самое: запустить `server.js`, адрес с https вписать на пульте.
+4. **Любой хостинг с Node.js** — то же самое: запустить `server.js`, адрес с https вписать на пульте.
 
 Нагрузка маленькая: каждый телефон присылает состояние раз в секунду (около 300 байт), 30 досок — 30 запросов
 в секунду, это по силам самому слабому серверу.
@@ -32,6 +41,6 @@ curl http://localhost:8080/health
 | `GET /room/stream?room&key` | пульт | поток состояний всех досок (Server-Sent Events) |
 | `POST /room/cmd {room, key, cmd, boards, data}` | пульт | команда доскам: `start` (с именами игроков), `show`, `reset` |
 | `GET /board/stream?room&board` | телефон | поток команд; команда `start` приходит и тому, кто подключился позже |
-| `POST /board/status {room, board, …}` | телефон | состояние: ищет доску / готова / идёт запись, ходы, позиция, заряд |
+| `POST /board/status {room, board, seq, …}` | телефон | состояние: ищет доску / готова / идёт запись, ходы, позиция, заряд; в ответе — команды новее `seq` |
 
 Команды доскам принимаются только с ключом организатора; телефону достаточно кода комнаты и номера доски.
