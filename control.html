@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Пульт турнира</title>
+<style>
+  :root { --bg: #0b0b0d; --card: #17171b; --card-2: #202026; --line: #2b2b33; --text: #f4f4f6; --muted: #9b9ba7; --accent: #f6b93b; --accent-ink: #1d1503;
+          --green: #2ecc71; --red: #ff5a64; --blue: #4ea3ff; --yellow: #f6b93b; --gray: #6b6b78; --violet: #b18cff; --sq-light: #f0d9b5; --sq-dark: #b58863; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; flex: 1; min-width: 160px; }
+  main { padding: 16px; max-width: 1500px; margin: 0 auto; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin-bottom: 14px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+  label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); flex: 1; min-width: 160px; }
+  input, textarea, select { background: var(--card-2); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 9px 10px; font: inherit; }
+  textarea { min-height: 70px; resize: vertical; }
+  button { background: var(--card-2); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 9px 14px; font: inherit; cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .45; cursor: default; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+  .summary { color: var(--muted); font-size: 14px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+  .bd { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+  .bd .top { display: flex; align-items: center; gap: 8px; }
+  .bd .num { font-weight: 700; font-size: 16px; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--gray); flex: none; }
+  .dot.search { background: var(--yellow); } .dot.ready { background: var(--green); } .dot.rec { background: var(--blue); }
+  .dot.done { background: var(--violet); } .dot.err { background: var(--red); }
+  .bd .st { font-size: 13px; color: var(--muted); flex: 1; }
+  .bd .names { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bd .moves { font-size: 12px; color: var(--muted); min-height: 16px; }
+  .mini { display: grid; grid-template-columns: repeat(8, 1fr); aspect-ratio: 1; border-radius: 6px; overflow: hidden; }
+  .mini div { position: relative; }
+  .mini div.l { background: var(--sq-light); } .mini div.d { background: var(--sq-dark); }
+  .mini img { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .bd .acts { display: flex; gap: 6px; }
+  .bd .acts button { padding: 5px 8px; font-size: 13px; white-space: nowrap; flex: 1; }
+  .links { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
+  .qr { background: #fff; color: #111; border-radius: 10px; padding: 8px; text-align: center; font-size: 13px; }
+  .qr img, .qr canvas { width: 100%; height: auto; image-rendering: pixelated; }
+  .qr a { color: #333; word-break: break-all; font-size: 10px; }
+  .err { color: var(--red); }
+  @media print { header, .card:not(#linksCard), .bar, #boards { display: none !important; } body, main { background: #fff; } .qr { break-inside: avoid; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>🖥 Пульт турнира <span id="tName" class="muted"></span></h1>
+  <span id="link" class="muted">нет связи с сервером</span>
+</header>
+<main>
+  <section class="card" id="setupCard">
+    <div class="row">
+      <label>Адрес сервера пульта<input id="server" placeholder="https://пульт.пример.рф" autocomplete="off" spellcheck="false"/></label>
+      <label>Название турнира и тура<input id="name" placeholder="Кубок клуба, тур 3"/></label>
+      <label style="max-width:140px">Досок<input id="nBoards" type="number" min="1" max="200" value="10"/></label>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <label>Пары по доскам — по строке на доску: «Белые – Чёрные» (необязательно)<textarea id="pairs" placeholder="Иванов – Петров&#10;Сидоров – Кузнецов"></textarea></label>
+    </div>
+    <details style="margin-top:10px">
+      <summary class="muted">Трансляция на lichess (необязательно)</summary>
+      <div class="row" style="margin-top:8px">
+        <label>Ссылка на раунд lichess<input id="bcRound" placeholder="https://lichess.org/broadcast/…/…/xxxxxxxx" autocomplete="off" spellcheck="false"/></label>
+        <label>Токен lichess (study:write)<input id="bcToken" type="password" placeholder="lip_…" autocomplete="off"/></label>
+        <label style="max-width:180px">Досок на один токен<input id="bcPer" type="number" min="1" max="200" placeholder="все"/></label>
+      </div>
+      <p class="muted">Токен попадёт в ссылки досок — раздавайте их только на телефоны досок. Один аккаунт lichess принимает до 120 отправок в минуту на все свои доски: при 30 досках на одном токене ход появится у зрителей до 15 с, при трёх токенах по 10 досок — до 5 с.</p>
+    </details>
+    <div class="row" style="margin-top:12px">
+      <button id="create" class="primary">Создать турнир</button>
+      <button id="open">Открыть сохранённый</button>
+      <span id="setupInfo" class="muted"></span>
+    </div>
+  </section>
+
+  <section id="boardsCard" hidden>
+    <div class="bar">
+      <button id="startReady" class="primary">▶ Начать все готовые</button>
+      <button id="startAll">▶ Начать все</button>
+      <button id="showAll">Показать диаграмму на всех</button>
+      <button id="resetAll">Сбросить старт</button>
+      <span id="summary" class="summary"></span>
+    </div>
+    <div id="boards" class="grid"></div>
+  </section>
+
+  <section class="card" id="linksCard" hidden>
+    <div class="bar"><b style="flex:1">Ссылки для телефонов</b><button id="print">🖨 Печать QR-кодов</button></div>
+    <p class="muted">Откройте ссылку доски на её телефоне (или наведите камеру телефона на QR-код). Телефон сам подключится к пульту и включит камеру; когда доска в начальной позиции будет найдена, её карточка здесь станет зелёной.</p>
+    <div id="links" class="links"></div>
+  </section>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<script src="js/control.js?v=22"></script>
+</body>
+</html>

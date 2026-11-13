@@ -17,7 +17,7 @@
 
   /* ---------- Константы и утилиты ---------- */
 
-  const APP_VERSION = '21 · ход виден после подтверждения, быстрые ходы подряд';
+  const APP_VERSION = '22 · пульт турнира на ноутбуке';
   const TICK_MS = 33;      // ~30 кадров/с
   const SETTLE_MS = 600;   // полная проверка, когда вся доска неподвижна
   const PROC_W = 640;
@@ -115,18 +115,18 @@
   // вторая сеть: узнаёт тип фигуры по крупному снимку (js/piece-net.js); запись ходов она не ведёт, а сверяет
   const PN = window.PieceNet;
   let pieceNet = null, pieceBg = null;
-  window.vcPieceReady = PN && !window.vcNoPieces ? PN.load('models/piece-net.bnet?v=21').then(n => {
+  window.vcPieceReady = PN && !window.vcNoPieces ? PN.load('models/piece-net.bnet?v=22').then(n => {
     pieceNet = n;
-    try { if (typeof Worker === 'function') pieceBg = new PN.Background('js/piece-net.js?v=21', n); } catch (e) { pieceBg = null; }
+    try { if (typeof Worker === 'function') pieceBg = new PN.Background('js/piece-net.js?v=22', n); } catch (e) { pieceBg = null; }
     return true;
   }).catch(e => { console.warn(e); return false; }) : Promise.resolve(false);
-  window.vcNetReady = BN ? BN.load((/[?&]net=light/.test(location.search) ? 'models/board-net-light.bnet' : 'models/board-net.bnet') + '?v=21').then(n => {
+  window.vcNetReady = BN ? BN.load((/[?&]net=light/.test(location.search) ? 'models/board-net-light.bnet' : 'models/board-net.bnet') + '?v=22').then(n => {
     boardNet = n;
     try {
       if (typeof Worker === 'function') {
         // две копии сети в двух фоновых потоках: кадры обрабатываются по очереди, проверок вдвое больше
         const nw = Math.max(1, Math.min(2, (navigator.hardwareConcurrency || 2) - 1));
-        for (let i = 0; i < nw; i++) netBgs.push(new BN.Background('js/board-net.js?v=21', n));
+        for (let i = 0; i < nw; i++) netBgs.push(new BN.Background('js/board-net.js?v=22', n));
         netBg = netBgs[0];
       }
     } catch (e) { netBg = null; netBgs = []; }
@@ -263,6 +263,98 @@
       startedAt: S.startedAt, savedAt: Date.now(),
     });
     bcUpdate('*');
+  }
+
+  /* ---------- Пульт турнира (js/pult.js, сервер server/server.js, страница control.html) ---------- */
+  const PU = window.Pult;
+  const ctlConf = () => Object.assign({ server: '', room: '', board: '', on: false }, store.get('vc_ctl', {}));
+  let pult = null, ctlLink = 'off', ctlTimer = null;
+  /** Пульт включён и ещё не дал команду «Начать»: доску ищем, ходы не записываем. */
+  function ctlHolding() { return !!(pult && !S.ctlStarted); }
+
+  function ctlStart() {
+    const c = ctlConf();
+    ctlStop();
+    if (!PU || !c.on || !c.server || !c.room || !(+c.board >= 1)) return;
+    S.ctlStarted = false;
+    pult = new PU.Pult({ server: c.server, room: c.room, board: Math.floor(+c.board), onCommand: ctlCommand, onLink: st => { ctlLink = st; renderCtlBadge(); } });
+    pult.connect();
+    ctlTimer = setInterval(() => ctlReport(false), 1000);
+    ctlReport(true);
+  }
+  function ctlStop() {
+    if (pult) pult.close();
+    pult = null;
+    if (ctlTimer) clearInterval(ctlTimer);
+    ctlTimer = null;
+    document.body.classList.remove('ctl-show');
+    renderCtlBadge();
+  }
+
+  function ctlCommand(m) {
+    if (!m || !m.cmd || S.phase === 'idle' || S.phase === 'finished') return;
+    const d = m.data || {};
+    if (m.cmd === 'start') {
+      if (d.white || d.black) {
+        S.headers = Object.assign({}, S.headers, d.white ? { white: String(d.white).slice(0, 80) } : {}, d.black ? { black: String(d.black).slice(0, 80) } : {});
+        autosave();
+      }
+      if (!S.ctlStarted) {
+        S.ctlStarted = true;
+        trackerReset();                       // трекер начнёт с позиции на доске в момент старта
+        toast('Партия началась — запись идёт', 2500);
+      }
+      ctlShow(true);
+    } else if (m.cmd === 'show') ctlShow(d.on !== false);
+    else if (m.cmd === 'reset') { S.ctlStarted = false; ctlShow(false); }
+    ctlReport(true);
+  }
+
+  /** Экран только с диаграммой (во время партии телефон показывает доску крупно). */
+  function ctlShow(on) {
+    document.body.classList.toggle('ctl-show', !!on);
+    if (on) { switchTab('board'); keepAwake(); }
+    renderCtlBadge();
+  }
+
+  function ctlReport(urgent) {
+    if (!pult) return;
+    const hist = S.chess.history();
+    const st = {
+      phase: S.error ? 'error' : S.phase === 'setup' ? 'search' : S.phase === 'ready' ? (S.ctlStarted ? 'started' : 'ready') : S.phase,
+      text: $('#status').textContent,
+      plies: hist.length, last: hist.slice(-2).join(' '), fen: S.chess.fen(),
+      white: (S.headers && S.headers.white) || '', black: (S.headers && S.headers.black) || '',
+      version: APP_VERSION,
+    };
+    if (S.pcLast) st.pieces = `${S.pcLast.agree}/${S.pcLast.n}`;
+    if (S.battery != null) st.battery = S.battery;
+    pult.status(st, urgent);
+  }
+
+  function renderCtlBadge() {
+    const el = $('#ctlBadge');
+    if (!el) return;
+    const c = ctlConf();
+    el.hidden = !pult;
+    if (!pult) return;
+    const link = { online: 'на связи', connecting: 'подключаюсь…', offline: 'нет связи', off: 'выключен' }[ctlLink] || ctlLink;
+    el.textContent = `🖥 Пульт, доска ${Math.floor(+c.board)}: ${link}` + (S.ctlStarted ? ' · партия начата' : ' · ждём «Начать»');
+    el.classList.toggle('ok', ctlLink === 'online');
+    el.classList.toggle('bad', ctlLink === 'offline');
+    const info = $('#showInfo');
+    if (info) info.textContent = `Доска ${Math.floor(+c.board)} · ходов ${S.chess.history().length}` + (ctlLink === 'online' ? '' : ' · нет связи с пультом');
+  }
+
+  /** Ссылка record.html#ctl=СЕРВЕР&room=КОД&board=N подключает телефон к пульту и сразу включает камеру. */
+  function ctlFromLink() {
+    const c = PU && PU.parseLink(location.hash);
+    if (!c) return false;
+    store.set('vc_ctl', { server: c.server, room: c.room, board: String(c.board), on: true });
+    if (c.white || c.black) { const f = Object.assign(readForm(), c.white ? { white: c.white } : {}, c.black ? { black: c.black } : {}); fillForm(f); store.set('vc_form', f); }
+    if (!/(^|&)bc=/.test(location.hash.replace(/^#/, ''))) { try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* ignore */ } }
+    keepStorage();
+    return true;
   }
 
   /* ---------- Трансляция на lichess (js/broadcast.js) ---------- */
@@ -500,9 +592,10 @@
         if ((tracker.isSteady() || (topDown && cellsMoving(300) <= 2)) && now - S.lastRecogAt > 300) {
           S.lastRecogAt = now;
           recognize(tracker.isSteady() ? tracker.steadyFeatures() : feat);
+          if (S.phase === 'setup') netStartCheck(feat);
         }
       } else if (trackerOn()) {
-        trackerTick(tracker.now);
+        if (!ctlHolding()) trackerTick(tracker.now);
         pieceTick(tracker.now);
       } else if (!S.ref) {
         if (tracker.isSteady()) setBase(tracker.steadyFeatures());
@@ -566,6 +659,41 @@
     if (!S.kManual) S.k = r.k;
     S.recogStreak = r.recognized ? S.recogStreak + 1 : 0;
     if (S.recogStreak >= 2) goReady(feat);
+  }
+
+  /*
+   * Начальная расстановка по нейросети: правило «по цветам» (recognize) иногда не узнаёт доску при необычном свете,
+   * а сеть видит её уверенно. Раз в 0,7 с фоновая сеть смотрит на кадр; если хотя бы 60 клеток из 64 совпадают
+   * с начальной расстановкой при одном из четырёх поворотов доски — доска найдена (на пульте — «зелёная»).
+   */
+  function netStartCheck(feat) {
+    if (!boardNet || !netBgs.length || S.manual || !settings.ai) return;
+    const now = performance.now();
+    if (now - (S.netStartAt || 0) < 700) return;
+    const bg = netBgs.find(b => !b.busy && !b.failed);
+    if (!bg) return;
+    const fr = netFrame();
+    if (!fr) return;
+    S.netStartAt = now;
+    bg.run(fr.img, fr.H, p => {
+      if (!p || S.phase !== 'setup') return;
+      const K = boardNet.classes;
+      let best = -1, bestK = 0;
+      for (let k = 0; k < 4; k++) {
+        let ok = 0;
+        for (const sq of BV.SQUARES) {
+          const q = BN.probs4(p, BV.squareToCell(sq, k), K), r = +sq[1];
+          const want = r <= 2 ? 1 : r >= 7 ? 2 : 0;
+          if (q[3] < 0.5 && q[want] >= q[0] && q[want] >= q[1] && q[want] >= q[2]) ok++;
+        }
+        if (ok > best) { best = ok; bestK = k; }
+      }
+      S.netStart = { ok: best, k: bestK };
+      if (best >= 60) {
+        S.netStartStreak = (S.netStartStreak || 0) + 1;
+        if (S.netStartStreak >= 2) { if (!S.kManual) S.k = bestK; goReady(tracker.isSteady() ? tracker.steadyFeatures() : null); }
+      } else S.netStartStreak = 0;
+    });
   }
 
   function goReady(feat) {
@@ -1743,6 +1871,7 @@
   /* ---------- Ходы ---------- */
 
   function applyMove(mv, source) {
+    if (source !== 'manual' && ctlHolding()) return null;   // пульт ещё не дал «Начать»
     const played = S.chess.move(mv);
     if (!played) return null;
     if (S.phase === 'setup' || S.phase === 'ready') {
@@ -1874,6 +2003,7 @@
         if (!S.recog) return ['search', 'Ищу доску…'];
         return ['search', 'Ищу начальную расстановку… Проверьте углы и фигуры. Если игра уже идёт — «Начать без проверки».'];
       case 'ready':
+        if (ctlHolding()) return ['ok', 'Доска распознана — ждём команды «Начать» с пульта.'];
         if (S.source === 'file' && video.paused) return ['ok', 'Доска распознана — запустите видео.'];
         return ['ok', 'Доска распознана — ждём первого хода.'];
       case 'recording':
@@ -2226,10 +2356,12 @@
     updatePlayButton();
     startLoop();
     keepAwake();
+    ctlStart();
     if (resume) toast('Продолжаем запись. Проверьте, что фигуры стоят как на цифровой доске.', 4000);
   }
 
   function leaveRecorder() {
+    ctlStop();
     stopMedia();
     S.phase = 'idle';
     S.drag = null;
@@ -2301,6 +2433,8 @@
     store.del('vc_current');
     stopMedia();
     S.phase = 'finished';
+    ctlReport(true);
+    document.body.classList.remove('ctl-show');
     $('#dimmer').hidden = true;
 
     $('#sumWhite').textContent = h.white || 'Белые';
@@ -2805,6 +2939,26 @@
       bcFill();
       bcUpdate('*');
     };
+    // пульт турнира
+    const ctlFill = () => {
+      const c = ctlConf();
+      $('#ctlServer').value = c.server; $('#ctlRoom').value = c.room; $('#ctlBoard').value = c.board; $('#ctlOn').checked = !!c.on;
+      $('#ctlInfo').textContent = c.on && c.server && c.room && c.board ? `Доска ${c.board} подключится к пульту, когда включится камера.` : '';
+    };
+    const ctlSave = () => {
+      store.set('vc_ctl', { server: $('#ctlServer').value.trim().replace(/\/+$/, ''), room: $('#ctlRoom').value.trim(), board: $('#ctlBoard').value.trim(), on: $('#ctlOn').checked });
+      ctlFill();
+    };
+    if (PU) {
+      const fromLink = ctlFromLink();
+      ctlFill();
+      ['#ctlServer', '#ctlRoom', '#ctlBoard', '#ctlOn'].forEach(id => $(id).addEventListener('change', ctlSave));
+      // открыли ссылку доски с пульта — сразу включаем камеру (как кнопка «Запись партии камерой»)
+      if (fromLink && !/[?&]video=/.test(location.search)) setTimeout(() => { if (S.phase === 'idle') $('#btnCamera').click(); }, 300);
+    } else $('#ctlCard').hidden = true;
+    $('#showExit').addEventListener('click', () => ctlShow(false));
+    try { if (navigator.getBattery) navigator.getBattery().then(b => { const upd = () => { S.battery = Math.round(b.level * 100) + (b.charging ? '+' : ''); }; upd(); b.addEventListener('levelchange', upd); b.addEventListener('chargingchange', upd); }).catch(() => {}); } catch (e) { /* нет API */ }
+
     if (LB) {
       bcFromLink();
       bcFill();
