@@ -9,7 +9,7 @@
   <title>Запись партии камерой</title>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet"/>
-  <link rel="stylesheet" href="css/record.css?v=19.2"/>
+  <link rel="stylesheet" href="css/record.css?v=20"/>
 </head>
 <body>
 <div id="app">
@@ -177,6 +177,7 @@
         <span id="turnDot" class="dot white"></span><b id="turnText">Ход белых</b>
         <small id="moveCounter">ходов пока нет</small>
         <small id="bcBadge" class="bc-badge" hidden></small>
+        <small id="pieceInfo" class="bc-badge" hidden></small>
       </div>
       <div id="board" class="board" aria-label="Цифровая доска"></div>
       <div id="promo" class="promo" hidden></div>
@@ -263,12 +264,13 @@
 <div id="toast" role="status"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js" crossorigin="anonymous"></script>
-<script src="js/board-vision.js?v=19.2"></script>
-<script src="js/board-detect.js?v=19.2"></script>
-<script src="js/square-ai.js?v=19.2"></script>
-<script src="js/board-net.js?v=19.2"></script>
-<script src="js/game-tracker.js?v=19.2"></script>
-<script src="js/broadcast.js?v=19.2"></script>
-<script src="js/record.js?v=19.2"></script>
+<script src="js/board-vision.js?v=20"></script>
+<script src="js/board-detect.js?v=20"></script>
+<script src="js/square-ai.js?v=20"></script>
+<script src="js/board-net.js?v=20"></script>
+<script src="js/piece-net.js?v=20"></script>
+<script src="js/game-tracker.js?v=20"></script>
+<script src="js/broadcast.js?v=20"></script>
+<script src="js/record.js?v=20"></script>
 </body>
 </html>
