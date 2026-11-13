@@ -14,12 +14,15 @@
   const fetchJ = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
     .then(r => r.json().then(j => { if (!r.ok) throw new Error(j.error || ('ошибка ' + r.status)); return j; }));
 
+  const VER = 24;          // версия приложения: ссылки телефонов с ?v= не берут из кэша старую страницу
+  const NEED_SERVER = 23;  // server.js старше не передаёт команды через бесплатный туннель Cloudflare
   let T = null;            // { server, room, key, name, boards, pairs: [[w, b]], bc: {round, token, per} }
   let es = null, poll = null;
   const boards = {};       // n → состояние от телефона
 
   const PHASE = {
     offline: ['', 'телефон не на связи'], search: ['search', 'ищет доску'], ready: ['ready', 'доска найдена — готова'],
+    pending: ['search', '«Начать» отправлена — телефон ещё не ответил'],
     started: ['rec', 'начата, ждёт первого хода'], recording: ['rec', 'идёт запись'], finished: ['done', 'партия закончена'], error: ['err', 'ошибка'],
   };
 
@@ -28,7 +31,7 @@
   }
 
   function phoneLink(n) {
-    const base = location.origin + location.pathname.replace(/control\.html$/, '') + 'record.html';
+    const base = location.origin + location.pathname.replace(/control\.html$/, '') + 'record.html?v=' + VER;
     const p = new URLSearchParams();
     p.set('ctl', T.server); p.set('room', T.room); p.set('board', String(n));
     const pair = T.pairs[n - 1] || [];
@@ -74,6 +77,7 @@
 
   function stateOf(b) {
     if (!b || !b.online) return 'offline';
+    if (b.started && !b.go && (b.phase === 'ready' || b.phase === 'search' || !b.phase)) return 'pending';
     return b.phase || 'search';
   }
 
@@ -88,9 +92,12 @@
       if (st === 'recording' || st === 'started') rec++;
       const pair = T.pairs[n - 1] || [];
       const w = b.white || pair[0] || 'Белые', bl = b.black || pair[1] || 'Чёрные';
+      const pv = parseInt(b.version, 10);
+      const old = st !== 'offline' && b.version && pv < VER
+        ? `<div class="warn">⚠ На телефоне старая версия ${pv}: закройте вкладку и снова откройте ссылку доски (QR-код).</div>` : '';
       html.push(`<div class="bd" data-n="${n}">
         <div class="top"><span class="dot ${cls}"></span><span class="num">${n}</span><span class="st">${esc(text)}${b.battery ? ' · 🔋' + esc(b.battery) + '%' : ''}</span></div>
-        <div class="names">${esc(w)} – ${esc(bl)}</div>
+        <div class="names">${esc(w)} – ${esc(bl)}${b.version ? ' <span class="muted">· v' + esc(pv) + '</span>' : ''}</div>${old}
         ${mini(b.fen || 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR')}
         <div class="moves">${b.plies ? 'полуходов ' + b.plies + (b.last ? ' · …' + esc(b.last) : '') : (st === 'search' && b.text ? esc(b.text).slice(0, 80) : '')}</div>
         <div class="acts"><button data-act="start" ${st === 'offline' ? 'disabled' : ''}>▶ Начать</button><button data-act="show" ${st === 'offline' ? 'disabled' : ''}>Диаграмма</button><button data-act="reset" ${st === 'offline' ? 'disabled' : ''}>Сброс</button></div>
@@ -106,13 +113,22 @@
     const perBoard = {};
     if (cmd === 'start') for (const n of list) { const p = T.pairs[n - 1] || []; if (p[0] || p[1]) perBoard[n] = { white: p[0], black: p[1] }; }
     return fetchJ(T.server + '/room/cmd', { room: T.room, key: T.key, cmd, boards: list, data: Object.assign({ perBoard }, data || {}) })
+      .then(j => { refresh(); return j; })
       .catch(e => alert('Не получилось: ' + e.message));
+  }
+
+  function serverVersion(j) {
+    const v = +j.version || 0, el = $('#srvWarn');
+    el.hidden = v >= NEED_SERVER;
+    if (v < NEED_SERVER) el.innerHTML = `⚠ <b>На ноутбуке запущен старый server.js${v ? ' (версия ' + v + ')' : ''}.</b> Через бесплатный адрес trycloudflare.com он не передаёт телефонам команду «Начать». `
+      + 'Скачайте server.js заново (ссылка в инструкции), в окне сервера нажмите Ctrl+C и снова запустите <code>node server.js</code>. Окно cloudflared можно не трогать.';
   }
 
   // Бесплатный туннель Cloudflare не пропускает поток событий — поэтому пульт ещё и опрашивает сервер каждые 2 с
   function refresh() {
     if (!T) return;
     fetchJ(T.server + '/room', { room: T.room, key: T.key, name: T.name, boards: T.boards }).then(j => {
+      serverVersion(j);
       for (const k in boards) delete boards[k];
       (j.boards || []).forEach(b => { boards[b.board] = b; });
       renderBoards();
@@ -126,6 +142,7 @@
     poll = setInterval(refresh, 2000);
     $('#link').textContent = 'подключаюсь…';
     fetchJ(T.server + '/room', { room: T.room, key: T.key, name: T.name, boards: T.boards }).then(j => {
+      serverVersion(j);
       (j.boards || []).forEach(b => { boards[b.board] = b; });
       renderBoards();
       es = new EventSource(T.server + '/room/stream?room=' + encodeURIComponent(T.room) + '&key=' + encodeURIComponent(T.key));

@@ -2,6 +2,9 @@
 chcp 65001 >nul
 cd /d "%~dp0"
 rem Пульт турнира: сервер + бесплатный адрес Cloudflare. Окна не закрывать, пока идёт тур.
+echo Обновляю server.js...
+curl -fsSL -o server.js.new https://raw.githubusercontent.com/MisterFoxxy/live-chessboard/main/server/server.js && move /y server.js.new server.js >nul
+if exist server.js.new del server.js.new
 start "Pult server" cmd /k node server.js
 timeout /t 2 >nul
 echo.

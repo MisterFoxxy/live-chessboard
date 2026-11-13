@@ -87,7 +87,13 @@
       })
       .then(j => {
         if (!j) return;
-        (Array.isArray(j.cmds) ? j.cmds : []).forEach(m => this.handle(m));
+        if (!Array.isArray(j.cmds)) {
+          // старый server.js (до версии 23) не присылает команды в ответе — хотя бы «начать» по флагу started
+          if (j.started && !this.oldStart) this.handle({ cmd: 'start', data: {} });
+          this.oldStart = !!j.started;
+          return;
+        }
+        j.cmds.forEach(m => this.handle(m));
         if (Number.isInteger(j.seq)) this.seq = Math.max(this.seq || 0, j.seq);   // все команды этой доски до j.seq уже получены
       })
       .catch(() => { if (this.pending == null) this.pending = st; if (++this.fails >= 3) this.setLink('offline'); })
