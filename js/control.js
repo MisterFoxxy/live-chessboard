@@ -119,6 +119,7 @@
 
   function serverVersion(j) {
     const v = +j.version || 0, el = $('#srvWarn');
+    el.textContent = '';
     el.hidden = v >= NEED_SERVER;
     if (v < NEED_SERVER) el.innerHTML = `⚠ <b>На ноутбуке запущен старый server.js${v ? ' (версия ' + v + ')' : ''}.</b> Через бесплатный адрес trycloudflare.com он не передаёт телефонам команду «Начать». `
       + 'Скачайте server.js заново (ссылка в инструкции), в окне сервера нажмите Ctrl+C и снова запустите <code>node server.js</code>. Окно cloudflared можно не трогать.';
@@ -133,7 +134,29 @@
       (j.boards || []).forEach(b => { boards[b.board] = b; });
       renderBoards();
       $('#link').textContent = '● на связи с сервером'; $('#link').style.color = 'var(--green)';
-    }).catch(() => { $('#link').textContent = 'нет связи с сервером — повторяю…'; $('#link').style.color = 'var(--red)'; });
+    }).catch(noServer);
+  }
+
+  /** Почему нет связи: адрес не открывается вовсе — или открывается, но сервер на ноутбуке не запущен. */
+  let diagBusy = false;
+  function noServer(e) {
+    $('#link').textContent = 'нет связи с сервером — повторяю…'; $('#link').style.color = 'var(--red)';
+    const el = $('#srvWarn');
+    if (e && !(e instanceof TypeError) && e.message) { el.hidden = false; el.textContent = '⚠ Сервер ответил: ' + e.message; return; }
+    if (diagBusy || !T) return;
+    diagBusy = true;
+    const srv = T.server;
+    // no-cors: ответ любого вида (даже страница ошибки Cloudflare) значит, что сам адрес работает
+    fetch(srv + '/health?t=' + Date.now(), { mode: 'no-cors', cache: 'no-store' }).then(() => true, () => false).then(up => {
+      diagBusy = false;
+      if (!T || T.server !== srv || $('#link').style.color !== 'var(--red)') return;
+      el.hidden = false;
+      el.innerHTML = up
+        ? '⚠ <b>Адрес работает, но сервер пульта на ноутбуке не отвечает.</b> Откройте в папке <code>pult</code> окно cmd и запустите <code>node server.js</code> '
+          + '(должно появиться «Пульт турнира: порт 8080») — или запустите <code>start-pult.bat</code>. Окно сервера не закрывайте, пока идёт тур.'
+        : `⚠ <b>Адрес ${esc(srv)} не открывается.</b> Проверьте: окно cloudflared открыто; адрес скопирован целиком из рамки в этом окне `
+          + '(при каждом запуске cloudflared адрес новый); ноутбук подключён к интернету. Новый адрес начинает работать через 10–60 секунд — пульт пробует снова каждые 2 с.';
+    });
   }
 
   function connect() {
@@ -149,7 +172,7 @@
       es.onopen = () => { $('#link').textContent = '● на связи с сервером'; $('#link').style.color = 'var(--green)'; };
       es.addEventListener('boards', e => { const list = JSON.parse(e.data); for (const k in boards) delete boards[k]; list.forEach(b => { boards[b.board] = b; }); renderBoards(); });
       es.addEventListener('board', e => { const b = JSON.parse(e.data); boards[b.board] = Object.assign(boards[b.board] || {}, b); renderBoards(); });
-    }).catch(e => { $('#link').textContent = 'сервер не отвечает: ' + e.message; $('#link').style.color = 'var(--red)'; });
+    }).catch(noServer);
   }
 
   function openTournament(t) {
@@ -182,8 +205,11 @@
     if (!t) { $('#setupInfo').textContent = 'Сохранённого турнира нет — создайте новый.'; return; }
     const f = readForm();
     // поля формы (пары, число досок, трансляция) можно поправить и открыть тот же турнир
-    if (f && f.server === t.server) Object.assign(t, { name: f.name || t.name, boards: f.boards, pairs: f.pairs.some(p => p[0] || p[1]) ? f.pairs : t.pairs, bc: f.bc.round ? f.bc : t.bc });
+    // адрес сервера берём из формы: у бесплатного адреса Cloudflare он новый при каждом запуске
+    const moved = f && f.server !== t.server;
+    if (f) Object.assign(t, { server: f.server, name: f.name || t.name, boards: f.boards, pairs: f.pairs.some(p => p[0] || p[1]) ? f.pairs : t.pairs, bc: f.bc.round ? f.bc : t.bc });
     openTournament(t);
+    if (moved) $('#setupInfo').textContent += ' Адрес сервера изменился — откройте на телефонах новые ссылки (QR-коды ниже).';
   });
   $('#boards').addEventListener('click', e => {
     const btn = e.target.closest('button[data-act]'); if (!btn) return;

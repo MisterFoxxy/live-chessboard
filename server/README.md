@@ -8,7 +8,7 @@
 
 ```
 node server.js            # порт 8080; другой — PORT=9000 node server.js
-curl http://localhost:8080/health
+curl http://127.0.0.1:8080/health
 ```
 
 **Сервер должен быть доступен по https://** — страницы приложения открыты по https (GitHub Pages), и браузер
@@ -19,7 +19,7 @@ curl http://localhost:8080/health
    (github.com/cloudflare/cloudflared/releases/latest → `cloudflared-windows-amd64.exe`, переименовать).
    Перед туром — двойной щелчок по `start-pult.bat`: откроется окно сервера, а во втором окне в рамке появится адрес
    `https://…trycloudflare.com` — его вписать на пульте. Адрес новый при каждом запуске, турнир создавать заново.
-   Вручную: `node server.js` и во втором окне `cloudflared tunnel --protocol http2 --url http://localhost:8080`
+   Вручную: `node server.js` и во втором окне `cloudflared tunnel --protocol http2 --url http://127.0.0.1:8080`
    (`--protocol http2` нужен, если сеть не пропускает QUIC — в выводе `QUIC connection failed`).
    Такой туннель не пропускает потоки Server-Sent Events, поэтому телефоны забирают команды в ответ на отправку
    состояния (раз в 2 с), а пульт опрашивает сервер раз в 2 с.
