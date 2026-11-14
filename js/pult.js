@@ -23,12 +23,14 @@
   /**
    * opts: { server, room, board, onCommand(msg), onLink(state), fetch, EventSource, minGap, poll }
    * Команды приходят двумя путями: поток SSE и ответ на каждую отправку состояния (раз в poll мс) —
-   * бесплатный туннель Cloudflare потоки SSE не пропускает. Повторы отсекаются по номеру команды seq.
+   * бесплатный туннель Cloudflare потоки SSE не пропускает. Повторы отсекаются по номеру команды seq;
+   * после перезапуска сервера (другой boot) нумерация начинается заново. «Начать» сервер повторяет в каждом
+   * ответе (start), пока её не сбросят, — телефон начнёт партию, даже если отдельная команда потерялась.
    * state: 'connecting' | 'online' | 'offline'
    */
   function Pult(opts) {
-    this.o = Object.assign({ minGap: 1000, poll: 2000 }, opts);
-    this.seq = null;
+    this.o = Object.assign({ minGap: 1000, poll: 2000, timeout: 8000 }, opts);
+    this.seq = null; this.boot = null; this.startSeq = null;
     this.server = clean(opts.server);
     this.fetch = this.o.fetch || (typeof fetch === 'function' ? fetch.bind(typeof window !== 'undefined' ? window : globalThis) : null);
     this.ES = this.o.EventSource || (typeof EventSource === 'function' ? EventSource : null);
@@ -53,6 +55,14 @@
   Pult.prototype.handle = function (m) {
     if (!m || typeof m !== 'object') return;
     if (Number.isInteger(m.seq)) { if (this.seq != null && m.seq <= this.seq) return; this.seq = m.seq; }
+    if (m.cmd === 'start') this.startSeq = m.seq;
+    if (this.o.onCommand) this.o.onCommand(m);
+  };
+
+  /** «Начать», которую сервер держит для этой доски: выполняется один раз на каждую новую команду. */
+  Pult.prototype.startLevel = function (m) {
+    if (!m || m.cmd !== 'start' || m.seq === this.startSeq) return;
+    this.startSeq = m.seq;
     if (this.o.onCommand) this.o.onCommand(m);
   };
 
@@ -76,8 +86,12 @@
     if (!this.fetch || this.pending == null || this.busy) return;
     const st = this.pending, text = JSON.stringify(st);
     this.pending = null; this.busy = true; this.lastAt = Date.now();
-    const body = JSON.stringify(Object.assign({ room: this.o.room, board: this.o.board }, this.seq != null ? { seq: this.seq } : {}, st));
-    this.fetch(this.server + '/board/status', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
+    const body = JSON.stringify(Object.assign({ room: this.o.room, board: this.o.board }, this.seq != null ? { seq: this.seq, boot: this.boot } : {}, st));
+    // запрос, который повис в сети, не должен останавливать связь: через timeout мс бросаем его и шлём новый
+    const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+    let killer = null;
+    const hang = new Promise((_, rej) => { killer = setTimeout(() => { if (ctl) ctl.abort(); rej(new Error('timeout')); }, this.o.timeout); });
+    Promise.race([this.fetch(this.server + '/board/status', Object.assign({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body }, ctl ? { signal: ctl.signal } : {})), hang])
       .then(r => {
         this.lastSent = text;
         this.fails = 0;
@@ -93,11 +107,13 @@
           this.oldStart = !!j.started;
           return;
         }
+        if (j.boot && j.boot !== this.boot) { this.boot = j.boot; this.seq = null; }   // сервер перезапущен — нумерация заново
         j.cmds.forEach(m => this.handle(m));
         if (Number.isInteger(j.seq)) this.seq = Math.max(this.seq || 0, j.seq);   // все команды этой доски до j.seq уже получены
+        if (j.start) this.startLevel(j.start);
       })
       .catch(() => { if (this.pending == null) this.pending = st; if (++this.fails >= 3) this.setLink('offline'); })
-      .then(() => { this.busy = false; if (this.pending != null) this.status(this.pending); });
+      .then(() => { clearTimeout(killer); this.busy = false; if (this.pending != null) this.status(this.pending); });
   };
 
   return { Pult, parseLink };

@@ -14,8 +14,8 @@
   const fetchJ = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
     .then(r => r.json().then(j => { if (!r.ok) throw new Error(j.error || ('ошибка ' + r.status)); return j; }));
 
-  const VER = 24;          // версия приложения: ссылки телефонов с ?v= не берут из кэша старую страницу
-  const NEED_SERVER = 23;  // server.js старше не передаёт команды через бесплатный туннель Cloudflare
+  const VER = 25;          // версия приложения: ссылки телефонов с ?v= не берут из кэша старую страницу
+  const NEED_SERVER = 25;  // server.js старше хуже передаёт команды через бесплатный туннель Cloudflare
   let T = null;            // { server, room, key, name, boards, pairs: [[w, b]], bc: {round, token, per} }
   let es = null, poll = null;
   const boards = {};       // n → состояние от телефона
@@ -96,7 +96,7 @@
       const old = st !== 'offline' && b.version && pv < VER
         ? `<div class="warn">⚠ На телефоне старая версия ${pv}: закройте вкладку и снова откройте ссылку доски (QR-код).</div>` : '';
       html.push(`<div class="bd" data-n="${n}">
-        <div class="top"><span class="dot ${cls}"></span><span class="num">${n}</span><span class="st">${esc(text)}${b.battery ? ' · 🔋' + esc(b.battery) + '%' : ''}</span></div>
+        <div class="top"><span class="dot ${cls}"></span><span class="num">${n}</span><span class="st">${esc(text)}${st !== 'offline' && b.ago >= 6 ? ' · <b class="err">нет ответа ' + esc(b.ago) + ' с</b>' : ''}${b.battery ? ' · 🔋' + esc(b.battery) + '%' : ''}</span></div>
         <div class="names">${esc(w)} – ${esc(bl)}${b.version ? ' <span class="muted">· v' + esc(pv) + '</span>' : ''}</div>${old}
         ${mini(b.fen || 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR')}
         <div class="moves">${b.plies ? 'полуходов ' + b.plies + (b.last ? ' · …' + esc(b.last) : '') : (st === 'search' && b.text ? esc(b.text).slice(0, 80) : '')}</div>
@@ -121,7 +121,7 @@
     const v = +j.version || 0, el = $('#srvWarn');
     el.textContent = '';
     el.hidden = v >= NEED_SERVER;
-    if (v < NEED_SERVER) el.innerHTML = `⚠ <b>На ноутбуке запущен старый server.js${v ? ' (версия ' + v + ')' : ''}.</b> Через бесплатный адрес trycloudflare.com он не передаёт телефонам команду «Начать». `
+    if (v < NEED_SERVER) el.innerHTML = `⚠ <b>На ноутбуке запущен старый server.js${v ? ' (версия ' + v + ')' : ''}.</b> Через бесплатный адрес trycloudflare.com команда «Начать» с ним может не дойти до телефонов. `
       + 'Скачайте server.js заново (ссылка в инструкции), в окне сервера нажмите Ctrl+C и снова запустите <code>node server.js</code>. Окно cloudflared можно не трогать.';
   }
 
