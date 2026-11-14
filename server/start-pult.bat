@@ -10,5 +10,5 @@ timeout /t 2 >nul
 echo.
 echo Адрес пульта появится ниже в рамке: https://....trycloudflare.com
 echo.
-cloudflared tunnel --protocol http2 --url http://localhost:8080
+cloudflared tunnel --protocol http2 --url http://127.0.0.1:8080
 pause
