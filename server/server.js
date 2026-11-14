@@ -12,7 +12,8 @@
  */
 'use strict';
 const http = require('http');
-const VERSION = 24;   // пульт сверяет: старый server.js не умеет передавать команды через бесплатный туннель
+const VERSION = 25;
+const BOOT = Math.random().toString(36).slice(2, 10);   // новый при каждом запуске: телефон сбрасывает нумерацию команд   // пульт сверяет: старый server.js не умеет передавать команды через бесплатный туннель
 const PORT = +(process.env.PORT || 8080);
 const ORIGIN = process.env.ALLOW_ORIGIN || '*';
 const MAX_ROOMS = 500, MAX_BOARDS = 200, MAX_BODY = 32 * 1024, ROOM_TTL = 24 * 3600 * 1000;
@@ -58,10 +59,11 @@ function room(id) {
 }
 function boardList(r) {
   const out = [];
-  for (const [n, st] of r.boards) out.push(Object.assign({ board: n, online: online(r, n, st), started: r.started.has(n) }, st));
+  for (const [n, st] of r.boards) out.push(Object.assign({ board: n, online: online(r, n, st), started: r.started.has(n) }, st, { ago: Math.round((Date.now() - st.at) / 1000) }));
   return out.sort((a, b) => a.board - b.board);
 }
-function online(r, n, st) { return (r.phones.get(n) || new Set()).size > 0 || !!(st && Date.now() - st.at < ONLINE_MS); }
+// на связи — значит, состояние приходило недавно (поток SSE через туннель может «висеть», не доставляя ничего)
+function online(r, n, st) { return st ? Date.now() - st.at < ONLINE_MS : (r.phones.get(n) || new Set()).size > 0; }
 function toOrg(r, type, obj) { for (const res of r.org) send(res, type, obj); }
 
 // Поток данных каждые 15 с — прокси не закрывают «молчащие» соединения
@@ -152,9 +154,9 @@ const server = http.createServer(async (req, res) => {
       r.boards.set(n, st);
       toOrg(r, 'board', Object.assign({ board: n, online: true, started: r.started.has(n) }, st));
       // команды, которых телефон ещё не видел (seq — номер последней полученной); новый телефон получает только «начать»
-      const seen = Number.isInteger(b.seq) && b.seq >= 0 && b.seq <= r.seq ? b.seq : null;
+      const seen = b.boot === BOOT && Number.isInteger(b.seq) && b.seq >= 0 && b.seq <= r.seq ? b.seq : null;
       const cmds = seen == null ? (r.started.has(n) ? [r.started.get(n)] : []) : (r.log.get(n) || []).filter(m => m.seq > seen);
-      return json(res, 200, { ok: true, version: VERSION, started: r.started.has(n), seq: r.seq, cmds });
+      return json(res, 200, { ok: true, version: VERSION, boot: BOOT, started: r.started.has(n), start: r.started.get(n) || null, seq: r.seq, cmds });
     }
 
     json(res, 404, { error: 'не найдено' });
