@@ -49,6 +49,9 @@
     arrive: 1,     // ход виден только по клетке «куда»: там уверенно стоит новая фигура ходящего дольше arrive с,
                    // а клетку «откуда» сеть по ошибке всё ещё видит занятой (0 — выкл.)
     hid: 0.9,      // ход с клетки под рукой: на клетке «куда» уверенно (не меньше hid) и недавно появилась фигура ходящего (0 — выкл.)
+    undo: 30,      // убирать пары «туда-обратно» (белых и чёрных сразу) за последние undo с, если промежуточное положение
+                   // доска ни разу уверенно не показала, а без них партия законна и приходит к той же позиции (0 — выкл.)
+    undoTop: 4,    // у скольких лучших гипотез их искать
   };
 
   function Tracker(ChessCtor, opts) {
@@ -62,6 +65,8 @@
     this.startFen = fen || null;
     this.beam = [{ node: this.node(fen || 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'), moves: [], acc: 0 }];
     this.started = false;
+    this.startPos = this.beam[0].node.pos;
+    this.obsLog = Array.from({ length: 64 }, () => []);   // смены уверенного ответа сети по клетке: [{t, c}]
     this.obsCls = new Int8Array(64).fill(-1);
     this.obsSince = new Float64Array(64);
     this.reads = 0;
@@ -240,7 +245,12 @@
     }
     if (nvis < o.minVisible) return this.started ? this.best() : null;
     for (let i = 0; i < 64; i++) {
-      if (conf[i] >= 0 && conf[i] !== this.obsCls[i]) { this.obsCls[i] = conf[i]; this.obsSince[i] = t; }
+      if (conf[i] >= 0 && conf[i] !== this.obsCls[i]) {
+        this.obsCls[i] = conf[i]; this.obsSince[i] = t;
+        const log = this.obsLog[i];
+        log.push({ t, c: conf[i] });
+        if (log.length > 64) log.splice(0, log.length - 64);
+      }
     }
     if (!this.started) {
       const cls = this.beam[0].node.cls;
@@ -353,10 +363,94 @@
       }
       beam = keep.concat(rest).slice(0, o.beam).sort((a, b) => a.acc - b.acc);
     } else beam = all.slice(0, o.beam);
+    if (o.undo) beam = this.dedupe(beam.map((h, i) => (i < o.undoTop && this.simplify(h)) || h));
     const base = beam[0].acc;
     for (const h of beam) h.acc -= base;
     this.beam = beam;
     return this.best();
+  };
+
+  /**
+   * Видела ли доска, что фигура цвета c (1 белая, 2 чёрная) заходила на клетку sq между t0 и t1 и ушла с неё около t1:
+   * клетка стала уверенно этого цвета после t0 и перестала им быть не позже чем через recent с после t1 (и не раньше
+   * чем за recent с до t1). Фигура, стоявшая там раньше, и постоянная ошибка сети заходом не считаются.
+   */
+  Tracker.prototype.seenAs = function (sq, c, t0, t1) {
+    const log = this.obsLog[sq], r = this.o.recent;
+    for (let k = 0; k < log.length; k++) {
+      const a = log[k].t, b = k + 1 < log.length ? log[k + 1].t : this.lastReadT;
+      if (log[k].c === c && a >= t0 && a <= t1 && b >= t1 - r - 1 && b <= t1 + r) return true;
+    }
+    return false;
+  };
+
+  /** Позиция после ходов moves от начала партии или null, если какой-то ход незаконен. */
+  Tracker.prototype.replay = function (moves) {
+    let pos = this.startPos;
+    for (const m of moves) {
+      if (m.pass) { pos = { b: pos.b, turn: 1 - pos.turn, castle: pos.castle, ep: -1 }; continue; }
+      const to = IDX[m.to], g = movesFromSq(pos, IDX[m.from]).find(x => x.to === to);
+      if (!g) return null;
+      pos = make(pos, g);
+    }
+    return pos;
+  };
+
+  /**
+   * Ложные «туда-обратно» и «через клетку». Когда сеть ошибается на клетках, которые закрывают высокие фигуры,
+   * лучшая гипотеза иногда объясняет картинку так: ладья f8–e8, конь d4–e6, ладья e8–f8, конь e6–d4, а потом
+   * настоящие ходы; или слон f1–a6 … a6–c4 вместо f1–c4. Пары ходов одной фигуры (у белых и у чёрных сразу —
+   * иначе собьётся очерёдность) убираем или сливаем в один ход, если между ними никто не трогал эти клетки,
+   * доска ни разу уверенно не показала фигуру на промежуточной клетке, а партия без них законна и приходит к той
+   * же позиции. Настоящие ходы не трогаем: там фигуру на промежуточной клетке видно.
+   */
+  Tracker.prototype.simplify = function (h) {
+    const o = this.o, mv = h.moves, n = mv.length, now = this.lastReadT;
+    if (n < 4 || now == null) return null;
+    const pairs = [];
+    for (let i = Math.max(0, n - 24); i < n; i++) {
+      const a = mv[i];
+      if (a.pass || a.promotion || a.t < now - o.undo) continue;
+      for (let j = i + 1; j < n; j++) {
+        const b = mv[j];
+        if (b.pass) break;
+        const touches = b.from === a.from || b.to === a.from || b.from === a.to || b.to === a.to;
+        if (!touches) continue;
+        // та же фигура пошла дальше: A→B, потом B→A («туда-обратно») или B→C (её провели через клетку B)
+        if (b.c === a.c && b.from === a.to && !b.promotion && !this.seenAs(IDX[a.to], a.c, a.t - o.recent, b.t)) pairs.push({ i, j, c: a.c, back: b.to === a.from });
+        break;
+      }
+    }
+    if (pairs.length < 2) return null;
+    for (const p of pairs) {
+      for (const q of pairs) {
+        if (p.c !== 1 || q.c !== 2 || p.i === q.i || p.i === q.j || p.j === q.i || p.j === q.j) continue;
+        if (p.back !== q.back) continue;   // иначе собьётся очерёдность
+        // «туда-обратно» — убрать оба хода; через клетку — один ход A→C на месте первого
+        const drop = new Set(p.back ? [p.i, p.j, q.i, q.j] : [p.j, q.j]);
+        const rest = [];
+        mv.forEach((m, k) => {
+          if (drop.has(k)) return;
+          if (!p.back && (k === p.i || k === q.i)) { const b = mv[k === p.i ? p.j : q.j]; rest.push(Object.assign({}, m, { to: b.to, promotion: b.promotion })); }
+          else rest.push(m);
+        });
+        const pos = this.replay(rest);
+        if (!pos || pos.turn !== h.node.pos.turn) continue;
+        let same = true;
+        for (let k = 0; k < 64 && same; k++) if (pos.b[k] !== h.node.pos.b[k]) same = false;
+        if (!same) continue;
+        const simpler = { node: this.node(pos), moves: rest, acc: h.acc };
+        return this.simplify(simpler) || simpler;    // могло остаться ещё несколько пар
+      }
+    }
+    return null;
+  };
+
+  /** Одинаковые позиции в луче (после упрощения) — оставляем лучшую. */
+  Tracker.prototype.dedupe = function (beam) {
+    const seen = new Set(), out = [];
+    for (const h of beam.slice().sort((a, b) => a.acc - b.acc)) { if (seen.has(h.node.key)) continue; seen.add(h.node.key); out.push(h); }
+    return out;
   };
 
   Tracker.prototype.best = function () { return this.beam[0]; };

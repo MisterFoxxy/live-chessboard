@@ -14,7 +14,7 @@
   const fetchJ = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
     .then(r => r.json().then(j => { if (!r.ok) throw new Error(j.error || ('ошибка ' + r.status)); return j; }));
 
-  const VER = 25;          // версия приложения: ссылки телефонов с ?v= не берут из кэша старую страницу
+  const VER = 26;          // версия приложения: ссылки телефонов с ?v= не берут из кэша старую страницу
   const NEED_SERVER = 25;  // server.js старше хуже передаёт команды через бесплатный туннель Cloudflare
   let T = null;            // { server, room, key, name, boards, pairs: [[w, b]], bc: {round, token, per} }
   let es = null, poll = null;
