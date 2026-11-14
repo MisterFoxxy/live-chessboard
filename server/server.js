@@ -166,4 +166,4 @@ const server = http.createServer(async (req, res) => {
 });
 
 if (require.main === module) server.listen(PORT, () => console.log('Пульт турнира: порт ' + PORT));
-module.exports = { server, rooms };
+module.exports = { server, rooms, VERSION };

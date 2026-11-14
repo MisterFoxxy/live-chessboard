@@ -238,5 +238,14 @@
     $('#pairs').value = (last.pairs || []).map(p => (p[0] || p[1]) ? `${p[0]} – ${p[1]}` : '').join('\n').replace(/\n+$/, '');
     if (last.bc) { $('#bcRound').value = last.bc.round || ''; $('#bcToken').value = last.bc.token || ''; $('#bcPer').value = last.bc.per || ''; }
   }
+  // control.html#server=АДРЕС — так пульт открывает программа на ноутбуке (server/pult-app.js): адрес вписан сам
+  const hp = new URLSearchParams(location.hash.replace(/^#/, ''));
+  const hs = (hp.get('server') || '').trim().replace(/\/+$/, '');
+  if (/^https?:\/\/\S+$/.test(hs)) {
+    $('#server').value = hs;
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* ignore */ }
+    if (last) $('#open').click();   // сохранённый турнир сразу открывается с новым адресом
+    else $('#setupInfo').textContent = 'Адрес сервера вписан программой пульта. Укажите название, число досок и пары и нажмите «Создать турнир».';
+  }
   window.vcControl = { get T() { return T; }, boards, phoneLink, command };
 })();
